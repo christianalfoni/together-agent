@@ -1,0 +1,10 @@
+{
+  "name": "together-agent",
+  "version": "0.1.0",
+  "description": "Together Agent Server",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "license": "MIT"
+}
