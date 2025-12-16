@@ -29,7 +29,13 @@
     "typescript": "^5.7.2"
   },
   "dependencies": {
+    "@ai-sdk/togetherai": "^1.0.30",
+    "@codesandbox/sdk": "^2.4.2",
+    "acorn": "^8.15.0",
+    "ai": "^5.0.113",
+    "ai-code-tools": "^1.0.2",
     "commander": "^12.1.0",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "zod": "^4.2.1"
   }
 }
