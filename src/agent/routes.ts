@@ -97,7 +97,7 @@ router.post("/", async (req, res) => {
       model: together("moonshotai/Kimi-K2-Instruct-0905"),
       messages,
       tools: createCodeTools(tools),
-      stopWhen: stepCountIs(10),
+      stopWhen: stepCountIs(20),
     });
 
     // Filter out tool-related messages and only keep user/assistant text messages

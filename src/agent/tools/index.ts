@@ -28,24 +28,66 @@ export function createCodeTools(tools: Record<string, Tool>) {
     },
     execute_tools: {
       description:
-        "Execute JavaScript code with access to tools via the 'tools' object. Return the result you want access to. IMPORTANT: Only use this tool to call the available tools and return their results. Do NOT attempt to access system resources, import modules, or execute any code outside of calling the provided tools. The code will be validated and execution will fail if it attempts to use require(), import, eval(), access process/global objects, console or any other potentially dangerous operations.",
+        "Execute JavaScript code with access to tools via the 'tools' object. Return the result you want access to. You can use console.log() to debug and see intermediate values. IMPORTANT: Only use this tool to call the available tools and return their results. Do NOT attempt to access system resources, import modules, or execute any code outside of calling the provided tools. The code will be validated and execution will fail if it attempts to use require(), import, eval(), access process/global objects, or any other potentially dangerous operations.",
       inputSchema: z.object({
         code: z.string().describe("The JavaScript code to execute"),
       }),
       execute: async ({ code }: { code: string }) => {
         console.log("CODE", code);
-        return executeTools(code, tools);
+        const execution = await executeTools(code, tools);
+
+        // Format the result for the LLM
+        const parts: string[] = [];
+
+        if (execution.error) {
+          parts.push(`Error: ${execution.error}`);
+        }
+
+        if (execution.logs && execution.logs.length > 0) {
+          parts.push(`Console output:\n${execution.logs.join("\n")}`);
+        }
+
+        if (execution.result !== undefined) {
+          const resultStr =
+            typeof execution.result === "object"
+              ? JSON.stringify(execution.result, null, 2)
+              : String(execution.result);
+          parts.push(`Result:\n${resultStr}`);
+        }
+
+        return parts.join("\n\n");
       },
     },
     execute_code: {
       description:
-        "Execute arbitrary JavaScript code for calculations, data transformations, or complex logic. Use this for computational tasks, data structure manipulation, mathematical operations, string processing, etc. Return the result you want to receive. IMPORTANT: This tool CANNOT access tools or external resources. It only has access to base JavaScript (Array, Object, String, Number, Math, Date, Map, Set, etc.). No imports, no require, no access to process/global objects or console.",
+        "Execute arbitrary JavaScript code for calculations, data transformations, or complex logic. Use this for computational tasks, data structure manipulation, mathematical operations, string processing, etc. Return the result you want to receive. You can use console.log() to debug and see intermediate values. IMPORTANT: This tool CANNOT access tools or external resources. It only has access to base JavaScript (Array, Object, String, Number, Math, Date, Map, Set, etc.). No imports, no require, no access to process/global objects.",
       inputSchema: z.object({
         code: z.string().describe("The JavaScript code to execute"),
       }),
       execute: async ({ code }: { code: string }) => {
         console.log("EXECUTE_CODE", code);
-        return executeCode(code);
+        const execution = await executeCode(code);
+
+        // Format the result for the LLM
+        const parts: string[] = [];
+
+        if (execution.error) {
+          parts.push(`Error: ${execution.error}`);
+        }
+
+        if (execution.logs && execution.logs.length > 0) {
+          parts.push(`Console output:\n${execution.logs.join("\n")}`);
+        }
+
+        if (execution.result !== undefined) {
+          const resultStr =
+            typeof execution.result === "object"
+              ? JSON.stringify(execution.result, null, 2)
+              : String(execution.result);
+          parts.push(`Result:\n${resultStr}`);
+        }
+
+        return parts.join("\n\n");
       },
     },
   };
