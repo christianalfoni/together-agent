@@ -1,0 +1,8 @@
+- Use streaming api
+- Create SSE endpoint instead and send messages (like responses, tool calls etc)
+- Create a POC of a Google Mail assistant
+  - Sign in with OAUth
+  - Use token with agent
+  - Tool to get unread emails
+  - Tool to send emails
+  - Create a webhook to ask sending the email

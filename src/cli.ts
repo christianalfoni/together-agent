@@ -201,6 +201,7 @@ program
             prompt: trimmedPrompt,
             apiKey,
             env: toolEnv,
+            debug: true, // Enable debug mode for CLI run command
           };
 
           // Include sessionId if we have one
@@ -243,15 +244,12 @@ program
             // Store sessionId for continuous conversation
             if (result.sessionId) {
               sessionId = result.sessionId;
-              if (!requestBody.sessionId) {
-                console.log(`Session started: ${sessionId}\n`);
-              }
             }
 
-            console.log("Response:");
-            console.log("─".repeat(50));
+            console.log("\n" + "─".repeat(70));
+            console.log("💬 RESPONSE");
             console.log(result.response);
-            console.log("─".repeat(50));
+            console.log("─".repeat(70));
 
             // Continue the conversation
             promptUser();

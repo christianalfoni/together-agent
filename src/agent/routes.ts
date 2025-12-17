@@ -52,8 +52,6 @@ async function loadTools(env: Record<string, string>) {
 
         // Convert to AI SDK tool format
         tools[toolName] = tool(toolDef);
-
-        console.log(`Loaded tool: ${toolName}`);
       } catch (err) {
         console.error(`Failed to load tool ${file}:`, err);
       }
@@ -65,8 +63,40 @@ async function loadTools(env: Record<string, string>) {
   return tools;
 }
 
+function printBaseToolsUsage() {
+  console.log("\n" + "=".repeat(70));
+  console.log("BASE TOOLS AVAILABLE");
+  console.log("=".repeat(70));
+
+  console.log("\n1. discover_tools");
+  console.log("   Description: Discover available tools by searching tool names");
+  console.log("   and schemas with a query pattern");
+  console.log("   Parameters:");
+  console.log("   - query (string): The search query to find relevant tools");
+  console.log("   Example usage:");
+  console.log("   discover_tools({ query: 'weather' })");
+
+  console.log("\n2. execute_tools");
+  console.log("   Description: Execute JavaScript code with access to tools via");
+  console.log("   the 'tools' object. Return the result you want access to.");
+  console.log("   Parameters:");
+  console.log("   - code (string): The JavaScript code to execute");
+  console.log("   Example usage:");
+  console.log("   execute_tools({ code: 'return await tools.getWeather({ location: \"NYC\" })' })");
+
+  console.log("\n3. execute_code");
+  console.log("   Description: Execute arbitrary JavaScript code for calculations,");
+  console.log("   data transformations, or complex logic");
+  console.log("   Parameters:");
+  console.log("   - code (string): The JavaScript code to execute");
+  console.log("   Example usage:");
+  console.log("   execute_code({ code: 'return [1,2,3].map(x => x * 2)' })");
+
+  console.log("\n" + "=".repeat(70) + "\n");
+}
+
 router.post("/", async (req, res) => {
-  const { prompt, apiKey, env = {}, sessionId: providedSessionId } = req.body;
+  const { prompt, apiKey, env = {}, sessionId: providedSessionId, debug = false } = req.body;
 
   if (!prompt) {
     return res.status(400).json({ error: "Prompt is required" });
@@ -100,18 +130,50 @@ router.post("/", async (req, res) => {
       stopWhen: stepCountIs(20),
     });
 
-    // Filter out tool-related messages and only keep user/assistant text messages
-    // We only want to store the final text response, not intermediate tool calls
-    const assistantMessage: CoreMessage = {
-      role: "assistant",
-      content: result.text,
-    };
+    // Filter out only discover_tools calls to reduce token usage
+    // Keep all other tool calls so the LLM has context about what it executed
+    // result.response.messages includes all messages (input + new responses)
+    const filteredMessages = result.response.messages
+      .map((msg) => {
+        // Keep all user messages as-is
+        if (msg.role === "user") {
+          return msg;
+        }
 
-    // Create a clean message history without tool calls/results
-    const cleanMessages = [...messages, assistantMessage];
+        // For assistant messages, filter out discover_tools calls from content
+        if (msg.role === "assistant") {
+          const content = Array.isArray(msg.content) ? msg.content : [msg.content];
+          const filteredContent = content.filter(
+            (c: any) => !(c.type === "tool-call" && c.toolName === "discover_tools")
+          );
 
-    // Store only the clean conversation history
-    sessions.set(sessionId, cleanMessages);
+          // Only keep the message if it has remaining content
+          if (filteredContent.length > 0) {
+            return { ...msg, content: filteredContent };
+          }
+          return null;
+        }
+
+        // For tool result messages, filter out discover_tools results
+        if (msg.role === "tool") {
+          const content = Array.isArray(msg.content) ? msg.content : [msg.content];
+          const filteredContent = content.filter(
+            (c: any) => !(c.type === "tool-result" && c.toolName === "discover_tools")
+          );
+
+          // Only keep the message if it has remaining content
+          if (filteredContent.length > 0) {
+            return { ...msg, content: filteredContent };
+          }
+          return null;
+        }
+
+        return msg;
+      })
+      .filter((msg): msg is CoreMessage => msg !== null);
+
+    // Store the conversation history with tool calls (except discover_tools)
+    sessions.set(sessionId, filteredMessages);
 
     res.json({
       success: true,

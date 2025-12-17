@@ -22,7 +22,10 @@ export function createCodeTools(tools: Record<string, Tool>) {
           ),
       }),
       execute: async ({ query }: { query: string }) => {
-        console.log("DISCOVER", query);
+        console.log("\n" + "─".repeat(70));
+        console.log("🔍 DISCOVER_TOOLS");
+        console.log(`Query: ${query}`);
+        console.log("─".repeat(70));
         return discoverToolsInMemory(query, tools);
       },
     },
@@ -33,7 +36,10 @@ export function createCodeTools(tools: Record<string, Tool>) {
         code: z.string().describe("The JavaScript code to execute"),
       }),
       execute: async ({ code }: { code: string }) => {
-        console.log("CODE", code);
+        console.log("\n" + "─".repeat(70));
+        console.log("⚙️  EXECUTE_TOOLS");
+        console.log(code);
+        console.log("─".repeat(70));
         const execution = await executeTools(code, tools);
 
         // Format the result for the LLM
@@ -65,7 +71,10 @@ export function createCodeTools(tools: Record<string, Tool>) {
         code: z.string().describe("The JavaScript code to execute"),
       }),
       execute: async ({ code }: { code: string }) => {
-        console.log("EXECUTE_CODE", code);
+        console.log("\n" + "─".repeat(70));
+        console.log("💻 EXECUTE_CODE");
+        console.log(code);
+        console.log("─".repeat(70));
         const execution = await executeCode(code);
 
         // Format the result for the LLM

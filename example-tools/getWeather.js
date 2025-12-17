@@ -1,13 +1,16 @@
 import { z } from "zod";
 
 export default {
-  description: "Get weather forecast temperature climate atmospheric conditions meteorology for any location city place region area. Check current real-time temperature degrees fahrenheit celsius hot cold warm cool. Find precipitation rain snow drizzle hail showers storms thunderstorms. Check wind speed direction gusts. Get humidity moisture levels atmospheric pressure. See sky conditions clear cloudy overcast sunny foggy. Weather forecast outdoor outside conditions feels-like apparent temperature wind-chill heat-index. Check if raining snowing storming sunny cloudy. Get weather report for cities towns regions countries worldwide global international locations geographic places.",
+  description:
+    "Get weather forecast temperature climate atmospheric conditions meteorology for any location city place region area. Check current real-time temperature degrees fahrenheit celsius hot cold warm cool. Find precipitation rain snow drizzle hail showers storms thunderstorms. Check wind speed direction gusts. Get humidity moisture levels atmospheric pressure. See sky conditions clear cloudy overcast sunny foggy. Weather forecast outdoor outside conditions feels-like apparent temperature wind-chill heat-index. Check if raining snowing storming sunny cloudy. Get weather report for cities towns regions countries worldwide global international locations geographic places.",
   inputSchema: z.object({
     location: z.string().describe("The city name"),
   }),
   execute: async ({ location }) => {
     // First, geocode the location to get coordinates
-    const geocodeUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1&language=en&format=json`;
+    const geocodeUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(
+      location.toLowerCase()
+    )}&count=1&language=en&format=json`;
     const geocodeResponse = await fetch(geocodeUrl);
     const geocodeData = await geocodeResponse.json();
 
