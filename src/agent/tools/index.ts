@@ -22,24 +22,16 @@ export function createCodeTools(tools: Record<string, Tool>) {
           ),
       }),
       execute: async ({ query }: { query: string }) => {
-        console.log("\n" + "─".repeat(70));
-        console.log("🔍 DISCOVER_TOOLS");
-        console.log(`Query: ${query}`);
-        console.log("─".repeat(70));
         return discoverToolsInMemory(query, tools);
       },
     },
     execute_tools: {
       description:
-        "Execute JavaScript code with access to tools via the 'tools' object. Return the result you want access to. You can use console.log() to debug and see intermediate values. IMPORTANT: Only use this tool to call the available tools and return their results. Do NOT attempt to access system resources, import modules, or execute any code outside of calling the provided tools. The code will be validated and execution will fail if it attempts to use require(), import, eval(), access process/global objects, or any other potentially dangerous operations.",
+        "Execute JavaScript code with access to asynchronous tools via the 'tools' object. Return the result you want access to. You can use console.log() to debug and see intermediate values. IMPORTANT: Only use this tool to call the available tools and return their results. Do NOT attempt to access system resources, import modules, or execute any code outside of calling the provided tools. The code will be validated and execution will fail if it attempts to use require(), import, eval(), access process/global objects, or any other potentially dangerous operations.",
       inputSchema: z.object({
         code: z.string().describe("The JavaScript code to execute"),
       }),
       execute: async ({ code }: { code: string }) => {
-        console.log("\n" + "─".repeat(70));
-        console.log("⚙️  EXECUTE_TOOLS");
-        console.log(code);
-        console.log("─".repeat(70));
         const execution = await executeTools(code, tools);
 
         // Format the result for the LLM
@@ -66,15 +58,11 @@ export function createCodeTools(tools: Record<string, Tool>) {
     },
     execute_code: {
       description:
-        "Execute arbitrary JavaScript code for calculations, data transformations, or complex logic. Use this for computational tasks, data structure manipulation, mathematical operations, string processing, etc. Return the result you want to receive. You can use console.log() to debug and see intermediate values. IMPORTANT: This tool CANNOT access tools or external resources. It only has access to base JavaScript (Array, Object, String, Number, Math, Date, Map, Set, etc.). No imports, no require, no access to process/global objects.",
+        "Execute arbitrary JavaScript code. Use this for computational tasks, data structure manipulation, mathematical operations, string processing, time evaluation etc. Return the result you want to receive. You can use console.log() to debug and see intermediate values. IMPORTANT: This tool CANNOT access tools or external resources. It only has access to base JavaScript (Array, Object, String, Number, Math, Date, Map, Set, etc.). No imports, no require, no access to process/global objects.",
       inputSchema: z.object({
         code: z.string().describe("The JavaScript code to execute"),
       }),
       execute: async ({ code }: { code: string }) => {
-        console.log("\n" + "─".repeat(70));
-        console.log("💻 EXECUTE_CODE");
-        console.log(code);
-        console.log("─".repeat(70));
         const execution = await executeCode(code);
 
         // Format the result for the LLM

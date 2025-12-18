@@ -1,11 +1,12 @@
 import { Router } from "express";
 import { createTogetherAI } from "@ai-sdk/togetherai";
-import { generateText, stepCountIs, tool, CoreMessage } from "ai";
+import { streamText, stepCountIs, tool, CoreMessage } from "ai";
 import { createCodeTools } from "./tools";
 import * as fs from "fs";
 import * as path from "path";
 import { pathToFileURL } from "url";
 import { randomUUID } from "crypto";
+import { AgentMessage } from "./types";
 
 export const router = Router();
 
@@ -63,40 +64,8 @@ async function loadTools(env: Record<string, string>) {
   return tools;
 }
 
-function printBaseToolsUsage() {
-  console.log("\n" + "=".repeat(70));
-  console.log("BASE TOOLS AVAILABLE");
-  console.log("=".repeat(70));
-
-  console.log("\n1. discover_tools");
-  console.log("   Description: Discover available tools by searching tool names");
-  console.log("   and schemas with a query pattern");
-  console.log("   Parameters:");
-  console.log("   - query (string): The search query to find relevant tools");
-  console.log("   Example usage:");
-  console.log("   discover_tools({ query: 'weather' })");
-
-  console.log("\n2. execute_tools");
-  console.log("   Description: Execute JavaScript code with access to tools via");
-  console.log("   the 'tools' object. Return the result you want access to.");
-  console.log("   Parameters:");
-  console.log("   - code (string): The JavaScript code to execute");
-  console.log("   Example usage:");
-  console.log("   execute_tools({ code: 'return await tools.getWeather({ location: \"NYC\" })' })");
-
-  console.log("\n3. execute_code");
-  console.log("   Description: Execute arbitrary JavaScript code for calculations,");
-  console.log("   data transformations, or complex logic");
-  console.log("   Parameters:");
-  console.log("   - code (string): The JavaScript code to execute");
-  console.log("   Example usage:");
-  console.log("   execute_code({ code: 'return [1,2,3].map(x => x * 2)' })");
-
-  console.log("\n" + "=".repeat(70) + "\n");
-}
-
 router.post("/", async (req, res) => {
-  const { prompt, apiKey, env = {}, sessionId: providedSessionId, debug = false } = req.body;
+  const { prompt, apiKey, env = {}, sessionId: providedSessionId } = req.body;
 
   if (!prompt) {
     return res.status(400).json({ error: "Prompt is required" });
@@ -105,6 +74,16 @@ router.post("/", async (req, res) => {
   if (!apiKey) {
     return res.status(400).json({ error: "Together API key is required" });
   }
+
+  // Set SSE headers
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+
+  // Helper function to send SSE message
+  const sendMessage = (message: AgentMessage) => {
+    res.write(`data: ${JSON.stringify(message)}\n\n`);
+  };
 
   try {
     // Generate or use existing sessionId
@@ -123,17 +102,78 @@ router.post("/", async (req, res) => {
     const together = createTogetherAI({ apiKey });
     const tools = await loadTools(env);
 
-    const result = await generateText({
+    const result = streamText({
       model: together("moonshotai/Kimi-K2-Instruct-0905"),
       messages,
       tools: createCodeTools(tools),
       stopWhen: stepCountIs(20),
     });
 
+    // Buffer text deltas and flush when we hit tool calls
+    let textBuffer = "";
+
+    const flushText = () => {
+      if (textBuffer) {
+        sendMessage({
+          type: "text",
+          content: textBuffer,
+        });
+        textBuffer = "";
+      }
+    };
+
+    // Use fullStream to get events in the correct order
+    for await (const chunk of result.fullStream) {
+      switch (chunk.type) {
+        case "text-delta":
+          // Accumulate text deltas
+          const text = (chunk as any).text;
+          if (text) {
+            textBuffer += text;
+          }
+          break;
+
+        case "tool-call":
+          // Flush any accumulated text before the tool call
+          flushText();
+
+          // Send tool call when it's requested
+          sendMessage({
+            type: "tool_call_requested",
+            toolName: chunk.toolName,
+            args: (chunk as any).input,
+            callId: chunk.toolCallId,
+          });
+          break;
+
+        case "tool-result":
+          // Flush any accumulated text after the tool result
+          flushText();
+
+          // Only send completion message if there's an error
+          if ((chunk as any).error || chunk.result?.error) {
+            sendMessage({
+              type: "tool_call_completed",
+              toolName: chunk.toolName,
+              callId: chunk.toolCallId,
+              result: chunk.result,
+              error: (chunk as any).error || chunk.result?.error,
+            });
+          }
+          break;
+
+        case "finish":
+          // Flush any remaining text at the end
+          flushText();
+          break;
+      }
+    }
+
+    // Get the final messages from the result
+    const finalMessages = await result.response.then((r) => r.messages);
+
     // Filter out only discover_tools calls to reduce token usage
-    // Keep all other tool calls so the LLM has context about what it executed
-    // result.response.messages includes all messages (input + new responses)
-    const filteredMessages = result.response.messages
+    const filteredMessages = finalMessages
       .map((msg) => {
         // Keep all user messages as-is
         if (msg.role === "user") {
@@ -172,19 +212,21 @@ router.post("/", async (req, res) => {
       })
       .filter((msg): msg is CoreMessage => msg !== null);
 
-    // Store the conversation history with tool calls (except discover_tools)
+    // Store the conversation history
     sessions.set(sessionId, filteredMessages);
 
-    res.json({
-      success: true,
+    // Send done message
+    sendMessage({
+      type: "done",
       sessionId,
-      response: result.text,
-      timestamp: new Date().toISOString(),
     });
+
+    res.end();
   } catch (error) {
-    res.status(500).json({
-      success: false,
+    sendMessage({
+      type: "error",
       error: error instanceof Error ? error.message : "An error occurred",
     });
+    res.end();
   }
 });

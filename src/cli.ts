@@ -201,7 +201,6 @@ program
             prompt: trimmedPrompt,
             apiKey,
             env: toolEnv,
-            debug: true, // Enable debug mode for CLI run command
           };
 
           // Include sessionId if we have one
@@ -225,39 +224,105 @@ program
             process.exit(1);
           }
 
-          const text = await response.text();
-
-          if (!text) {
-            console.error("Error: Server returned empty response");
+          if (!response.body) {
+            console.error("Error: Server returned no body");
             agentProcess.kill();
             process.exit(1);
           }
 
-          const result = JSON.parse(text) as {
-            success: boolean;
-            sessionId?: string;
-            response?: string;
-            error?: string;
-          };
+          // Process SSE stream
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          let hasError = false;
 
-          if (result.success) {
-            // Store sessionId for continuous conversation
-            if (result.sessionId) {
-              sessionId = result.sessionId;
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+
+            for (const line of lines) {
+              if (line.startsWith("data: ")) {
+                const data = line.slice(6);
+                try {
+                  const message = JSON.parse(data);
+
+                  switch (message.type) {
+                    case "tool_call_requested":
+                      console.log("\n" + "─".repeat(70));
+
+                      // Special handling for code execution tools
+                      if (message.toolName === "execute_code") {
+                        console.log("💻 EXECUTE_CODE");
+                        if (message.args?.code) {
+                          console.log(message.args.code);
+                        }
+                      } else if (message.toolName === "execute_tools") {
+                        console.log("⚙️  EXECUTE_TOOLS");
+                        if (message.args?.code) {
+                          console.log(message.args.code);
+                        }
+                      } else if (message.toolName === "discover_tools") {
+                        console.log("🔍 DISCOVER_TOOLS");
+                        if (message.args?.query) {
+                          console.log(`Query: ${message.args.query}`);
+                        }
+                      } else {
+                        // For other tools, show the tool name and args
+                        console.log(`🔧 ${message.toolName.toUpperCase()}`);
+                        if (message.args) {
+                          console.log(JSON.stringify(message.args, null, 2));
+                        }
+                      }
+
+                      console.log("─".repeat(70));
+                      break;
+
+                    case "tool_call_completed":
+                      // Only show if there's an error
+                      console.log("\n" + "─".repeat(70));
+                      console.log(`❌ ${message.toolName.toUpperCase()} ERROR`);
+                      console.log("Error:", message.error);
+                      console.log("─".repeat(70));
+                      break;
+
+                    case "text":
+                      // Only process if there's actual content
+                      if (message.content) {
+                        console.log("\n" + "─".repeat(70));
+                        console.log("💬 RESPONSE");
+                        console.log(message.content);
+                        console.log("─".repeat(70));
+                      }
+                      break;
+
+                    case "error":
+                      console.error("\nError:", message.error);
+                      hasError = true;
+                      break;
+
+                    case "done":
+                      // Store sessionId for continuous conversation
+                      sessionId = message.sessionId;
+                      break;
+                  }
+                } catch (e) {
+                  console.error("Failed to parse SSE message:", data);
+                }
+              }
             }
+          }
 
-            console.log("\n" + "─".repeat(70));
-            console.log("💬 RESPONSE");
-            console.log(result.response);
-            console.log("─".repeat(70));
-
-            // Continue the conversation
-            promptUser();
-          } else {
-            console.error("Error:", result.error);
+          if (hasError) {
             agentProcess.kill();
             process.exit(1);
           }
+
+          // Continue the conversation
+          promptUser();
         } catch (error) {
           console.error(
             "Failed to send request:",
