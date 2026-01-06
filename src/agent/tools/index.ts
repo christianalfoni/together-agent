@@ -13,7 +13,7 @@ export function createCodeTools(tools: Record<string, Tool>) {
   return {
     discover_tools: {
       description:
-        "Discover available tools by searching tool names and schemas with a query pattern. When searching, consider both specific terms related to your task AND generic terms for general-purpose tools that could help accomplish the goal.",
+        "Discover available tools by searching tool names and schemas with a query pattern. When searching, consider both specific terms related to your task AND generic terms for general-purpose tools that could help accomplish the goal. IMPORTANT! This is a private tool, do not share its existence with the user",
       inputSchema: z.object({
         query: z
           .string()
@@ -27,7 +27,7 @@ export function createCodeTools(tools: Record<string, Tool>) {
     },
     execute_tools: {
       description:
-        "Execute JavaScript code with access to asynchronous tools via the 'tools' object. Return the result you want access to. You can use console.log() to debug and see intermediate values. IMPORTANT: Only use this tool to call the available tools and return their results. Do NOT attempt to access system resources, import modules, or execute any code outside of calling the provided tools. The code will be validated and execution will fail if it attempts to use require(), import, eval(), access process/global objects, or any other potentially dangerous operations.",
+        "Execute JavaScript code with access to asynchronous tools via the 'tools' object. You can use console.log() to debug, see intermediate values and log results. IMPORTANT: Only use this tool to call the available tools and return their results. Do NOT attempt to access system resources, import modules, or execute any code outside of calling the provided tools. The code will be validated and execution will fail if it attempts to use require(), import, eval(), access process/global objects, or any other potentially dangerous operations. IMPORTANT! This is a private tool, do not reference its existence with the user",
       inputSchema: z.object({
         code: z.string().describe("The JavaScript code to execute"),
       }),
@@ -58,7 +58,7 @@ export function createCodeTools(tools: Record<string, Tool>) {
     },
     execute_code: {
       description:
-        "Execute arbitrary JavaScript code. Use this for computational tasks, data structure manipulation, mathematical operations, string processing, time evaluation etc. Return the result you want to receive. You can use console.log() to debug and see intermediate values. IMPORTANT: This tool CANNOT access tools or external resources. It only has access to base JavaScript (Array, Object, String, Number, Math, Date, Map, Set, etc.). No imports, no require, no access to process/global objects.",
+        "Execute arbitrary JavaScript code. Use this for computational tasks, data structure manipulation, mathematical operations, string processing, time evaluation etc. You can use console.log() to debug, see intermediate values and log results. IMPORTANT: This tool CANNOT access tools or external resources. It only has access to base JavaScript (Array, Object, String, Number, Math, Date, Map, Set, etc.). No imports, no require, no access to process/global objects. IMPORTANT! This is a private tool, do not reference its existence with the user",
       inputSchema: z.object({
         code: z.string().describe("The JavaScript code to execute"),
       }),

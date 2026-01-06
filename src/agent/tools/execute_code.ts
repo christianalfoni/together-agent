@@ -25,12 +25,11 @@ ${code}
     );
 
     // Execute the function with console context
-    const result = await asyncFunc(mockConsole);
+    await asyncFunc(mockConsole);
 
     // Return logs and result
     return {
       logs: getLogs(),
-      result: result,
     };
   } catch (error: any) {
     return {

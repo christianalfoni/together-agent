@@ -363,7 +363,7 @@ const result = await agent.prompt('Search for latest news', {
 
 ## Creating Tools
 
-Tools are JavaScript/ES6 modules that export a default object with three required fields:
+Tools are JavaScript/ES6 modules that export a default object with the following fields:
 
 ### Tool Structure
 
@@ -374,6 +374,9 @@ export default {
   description: 'Your tool description',
   inputSchema: z.object({
     param: z.string().describe('Parameter description'),
+  }),
+  outputSchema: z.object({
+    result: z.string().describe('Result description'),
   }),
   execute: async (params) => {
     // Your tool logic
@@ -418,7 +421,19 @@ inputSchema: z.object({
 })
 ```
 
-#### 3. `execute` (async function)
+#### 3. `outputSchema` (Zod schema, optional)
+
+Define the expected output structure of your tool using Zod schemas. This helps the AI understand what data your tool will return and validates the output.
+
+```javascript
+outputSchema: z.object({
+  temperature: z.number().describe('The temperature value'),
+  condition: z.string().describe('Weather condition description'),
+  humidity: z.number().optional().describe('Humidity percentage'),
+})
+```
+
+#### 4. `execute` (async function)
 
 The function that performs the tool's action. Receives validated parameters and returns the result.
 
@@ -480,6 +495,12 @@ export default {
     from: z.string().describe('Starting location or city'),
     to: z.string().describe('Destination location or city'),
   }),
+  outputSchema: z.object({
+    distance: z.number().describe('The distance value'),
+    unit: z.string().describe('The unit of measurement (e.g., miles, kilometers)'),
+    from: z.string().describe('Starting location'),
+    to: z.string().describe('Destination location'),
+  }),
   execute: async ({ from, to }) => {
     // Implementation here
     return {
@@ -504,6 +525,10 @@ export default (env) => ({
     to: z.string().describe('Recipient email address'),
     subject: z.string().describe('Email subject line'),
     body: z.string().describe('Email body content'),
+  }),
+  outputSchema: z.object({
+    success: z.boolean().describe('Whether the email was sent successfully'),
+    messageId: z.string().describe('The unique message identifier'),
   }),
   execute: async ({ to, subject, body }) => {
     const apiKey = env.SENDGRID_API_KEY;

@@ -1,8 +1,8 @@
-- Use streaming api
-- Create SSE endpoint instead and send messages (like responses, tool calls etc)
-- Create a POC of a Google Mail assistant
-  - Sign in with OAUth
-  - Use token with agent
-  - Tool to get unread emails
-  - Tool to send emails
-  - Create a webhook to ask sending the email
+- Use typescript tools with schema validation
+- update docs to reflect building an agent, not just tools
+- what about many tools in same domain... would that not overload? Maybe some kind of weight on hits? Max 5 tools?
+- agent instance IS the session, do not need sessionId
+- Drop using CSB SDK in the Agent SDK
+- Show actual tool calls, not just native tools
+- Can we internally protect execution? Can just have a message?
+- Store messages in file

@@ -42,12 +42,11 @@ ${code}
     );
 
     // Execute the function with the wrapped tools and console context
-    const result = await asyncFunc(wrappedTools, mockConsole);
+    await asyncFunc(wrappedTools, mockConsole);
 
     // Return logs and result
     return {
       logs: getLogs(),
-      result: result,
     };
   } catch (error: any) {
     return {
