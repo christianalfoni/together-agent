@@ -42,6 +42,83 @@ for await (const message of agent.prompt('What is the weather in Tokyo?')) {
 }
 ```
 
+## Security
+
+Together Agent implements multiple layers of security to protect against code injection, secrets exposure, and unauthorized access.
+
+### Code Execution Security
+
+When the AI generates code to call your tools, that code is **never directly executed**. Instead:
+
+1. **AST Parsing** - Generated code is parsed into an Abstract Syntax Tree (AST) before execution
+2. **Static Analysis** - The AST is analyzed to detect and reject dangerous patterns:
+   - No `require()` or `import` statements
+   - No `eval()`, `Function()`, or code generation
+   - No access to `process`, `global`, or other Node.js internals
+   - No filesystem or network access
+3. **Controlled Execution** - Only validated code runs in a restricted JavaScript environment
+
+This prevents the AI from generating malicious code that attempts to access system resources or escape the sandbox.
+
+### Secrets Security
+
+Secrets (API keys, credentials, etc.) are handled with strict isolation:
+
+**How secrets are protected:**
+
+1. **Closure-based isolation** - Secrets are exposed to your tool definitions via a closure:
+   ```typescript
+   export default (context) => ({
+     execute: async (params) => {
+       const apiKey = context.secrets.API_KEY;  // ✅ Tools can access secrets
+       // ...
+     }
+   })
+   ```
+
+2. **Proxy layer** - When the AI generates code like `tools.getWeather({ location: "Paris" })`, it's calling a **proxy**, not your actual tool:
+   ```
+   AI-generated code → Proxy → Validates input → Calls actual tool with secrets
+   ```
+
+3. **No direct access** - The AI-generated code never sees your tool implementations or secrets:
+   ```javascript
+   // AI generates this:
+   const result = await tools.getWeather({ location: "Paris" });
+
+   // It CANNOT do this (secrets not in scope):
+   const apiKey = context.secrets.API_KEY;  // ❌ ReferenceError
+
+   // It CANNOT do this (no access to tool source):
+   console.log(tools.getWeather.toString());  // ❌ Returns proxy, not real function
+   ```
+
+**Secrets are:**
+- Never stored in code or version control
+- Only accessible during tool execution
+- Isolated from AI-generated code via closures
+- Never included in conversation history or logs
+
+### Sandbox Isolation
+
+Each agent runs in an **isolated CodeSandbox environment per end user**:
+
+- Separate filesystem and process space
+- Network-isolated from other users
+- Temporary execution environment
+- No persistent state between sessions
+
+The security measures above (AST validation, proxy layer, secret isolation) are **additional protections** on top of this sandbox isolation, providing defense-in-depth against potential exploits.
+
+### Best Practices
+
+To maximize security:
+
+1. **Never hardcode secrets** - Always use `context.secrets`
+2. **Request approval for sensitive actions** - Use `context.requestApproval()` for operations like sending emails, making payments, or deleting data
+3. **Validate tool inputs** - Even though inputs are validated against your Zod schema, add additional business logic validation
+4. **Sanitize tool outputs** - If outputs will be displayed to users, sanitize them to prevent XSS or injection attacks
+
 ## Defining Your Agent
 
 Your agent consists of tools that are TypeScript modules:
