@@ -1,6 +1,9 @@
 import { validateCode } from "./validate_code";
 import { createConsoleInterceptor } from "./console_interceptor";
 
+// Default execution timeout in milliseconds (30 seconds)
+const EXECUTION_TIMEOUT_MS = 30000;
+
 export async function executeTools(code: string, tools: Record<string, any>) {
   try {
     // Validate the code before execution
@@ -41,8 +44,16 @@ ${code}
       })();`
     );
 
-    // Execute the function with the wrapped tools and console context
-    await asyncFunc(wrappedTools, mockConsole);
+    // Execute with timeout protection
+    await Promise.race([
+      asyncFunc(wrappedTools, mockConsole),
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`Execution timeout: code took longer than ${EXECUTION_TIMEOUT_MS / 1000} seconds`)),
+          EXECUTION_TIMEOUT_MS
+        )
+      ),
+    ]);
 
     // Return logs and result
     return {

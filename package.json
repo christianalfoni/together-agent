@@ -1,19 +1,12 @@
 {
-  "name": "together-agent",
+  "name": "together-agent-workspace",
   "version": "0.1.0",
-  "description": "Build AI agents with custom tools powered by Together AI",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "bin": {
-    "together-agent": "dist/cli.js"
-  },
+  "private": true,
+  "description": "Together Agent SDK workspace",
   "scripts": {
-    "build": "npm run build:cli && npm run build:agent && npm run postbuild",
-    "build:cli": "tsc",
-    "build:agent": "node build-agent.js",
-    "postbuild": "chmod +x dist/cli.js && chmod +x dist/agent/index.js",
-    "dev": "tsc --watch",
-    "start": "node dist/cli.js"
+    "build": "pnpm -r build",
+    "dev": "pnpm -r --parallel dev",
+    "clean": "pnpm -r exec rm -rf dist node_modules"
   },
   "keywords": [
     "ai",
@@ -26,20 +19,6 @@
   "author": "",
   "license": "MIT",
   "devDependencies": {
-    "@types/express": "^5.0.6",
-    "@types/node": "^22.10.2",
-    "esbuild": "^0.27.1",
     "typescript": "^5.7.2"
-  },
-  "dependencies": {
-    "@ai-sdk/togetherai": "^1.0.30",
-    "@codesandbox/sdk": "^2.4.2",
-    "acorn": "^8.15.0",
-    "ai": "^5.0.113",
-    "ai-code-tools": "^1.0.2",
-    "commander": "^12.1.0",
-    "dotenv": "^17.2.3",
-    "express": "^5.2.1",
-    "zod": "^4.2.1"
   }
 }

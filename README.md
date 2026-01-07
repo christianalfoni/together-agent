@@ -119,6 +119,270 @@ To maximize security:
 3. **Validate tool inputs** - Even though inputs are validated against your Zod schema, add additional business logic validation
 4. **Sanitize tool outputs** - If outputs will be displayed to users, sanitize them to prevent XSS or injection attacks
 
+---
+
+## Security Best Practices for Tool Developers
+
+When building custom tools for Together Agent, follow these guidelines to ensure your tools remain secure and don't accidentally expose sensitive information.
+
+### 🔴 Critical: Never Log Secrets
+
+**Problem:** Console output from tools is visible to the AI model. If you log secrets, the AI can see them in execution results.
+
+❌ **DON'T DO THIS:**
+```typescript
+export default (context) => ({
+  execute: async (params) => {
+    const apiKey = context.secrets.API_KEY;
+    console.log("Using API key:", apiKey);  // ❌ DANGEROUS! Exposes secret to AI
+    console.log("Full context:", context);   // ❌ DANGEROUS! Exposes all secrets
+
+    const response = await callAPI(apiKey);
+    return response;
+  }
+})
+```
+
+✅ **DO THIS INSTEAD:**
+```typescript
+export default (context) => ({
+  execute: async (params) => {
+    const apiKey = context.secrets.API_KEY;
+    console.log("Calling API...");           // ✅ SAFE - no secret exposed
+
+    const response = await callAPI(apiKey);
+    console.log("API call completed");       // ✅ SAFE - generic message
+    return response;
+  }
+})
+```
+
+**Why this matters:** While the SDK prevents AI-generated code from accessing `context.secrets` directly, YOUR tool code CAN access secrets. If you accidentally log them, they become visible to the AI in the console output.
+
+### 🔴 Critical: Sanitize Error Messages
+
+**Problem:** Error messages are returned to the AI. Exceptions that include secrets or sensitive information will leak them.
+
+❌ **DON'T DO THIS:**
+```typescript
+try {
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${apiKey}` }
+  });
+} catch (error) {
+  // ❌ DANGEROUS! May include the API key in error message
+  throw new Error(`API call failed with key ${apiKey}: ${error.message}`);
+
+  // ❌ DANGEROUS! Stack traces may include file paths and secrets
+  throw error;
+}
+```
+
+✅ **DO THIS INSTEAD:**
+```typescript
+try {
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${apiKey}` }
+  });
+
+  if (!response.ok) {
+    // ✅ SAFE - no secrets, just status info
+    throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+  }
+} catch (error) {
+  // ✅ SAFE - sanitized error message
+  throw new Error(`API call failed: ${error.message}`);
+}
+```
+
+**Best practices for error handling:**
+- Never include secrets in error messages
+- Remove stack traces before throwing
+- Use generic error messages when possible
+- Don't expose internal file paths or system information
+
+### 🟡 Important: Use Approval for Sensitive Actions
+
+**Problem:** Without approval, the AI can perform destructive or costly actions without user confirmation.
+
+**Examples of actions that need approval:**
+- Sending emails
+- Making purchases or payments
+- Deleting data
+- Modifying important records
+- Posting to social media
+- Making expensive API calls
+
+✅ **Implement approval for sensitive actions:**
+```typescript
+export default (context) => ({
+  description: 'Send an email to a recipient',
+  execute: async ({ to, subject, body }) => {
+    // Request approval BEFORE performing the action
+    await context.requestApproval({
+      action: 'send_email',
+      to,
+      subject,
+      body: body.substring(0, 200), // Show preview
+      warning: 'This will send a real email to the recipient'
+    });
+
+    // Only proceeds if user approves
+    const apiKey = context.secrets.SENDGRID_API_KEY;
+    await sendEmail(to, subject, body, apiKey);
+
+    return { success: true };
+  }
+})
+```
+
+**When approval is rejected:**
+- The `requestApproval()` call throws an error
+- Tool execution stops immediately
+- AI receives an error message that user declined
+
+### 🟡 Important: Implement Rate Limiting for Expensive Operations
+
+**Problem:** The SDK doesn't limit how many times tools are called. Without rate limiting, the AI could make excessive API calls that cost money.
+
+✅ **Add per-session rate limiting:**
+```typescript
+// Simple counter-based rate limiting
+let callCount = 0;
+const MAX_CALLS_PER_SESSION = 10;
+const SESSION_TIMEOUT = 60000; // 1 minute
+
+let sessionStart = Date.now();
+
+export default (context) => ({
+  description: 'Search the web',
+  execute: async ({ query }) => {
+    // Reset counter if session expired
+    if (Date.now() - sessionStart > SESSION_TIMEOUT) {
+      callCount = 0;
+      sessionStart = Date.now();
+    }
+
+    // Check rate limit
+    if (callCount >= MAX_CALLS_PER_SESSION) {
+      throw new Error('Rate limit exceeded. Maximum 10 searches per minute.');
+    }
+
+    callCount++;
+
+    // Make API call
+    const apiKey = context.secrets.BRAVE_API_KEY;
+    return await searchWeb(query, apiKey);
+  }
+})
+```
+
+**For more sophisticated rate limiting:**
+- Use a token bucket algorithm
+- Implement per-user limits (if you track users)
+- Add costs/quotas for different operations
+- Consider using a rate limiting library
+
+### 🟢 Optional: Validate Secrets Early
+
+**Problem:** Missing secrets cause tool execution to fail, wasting time and tokens.
+
+✅ **Check for required secrets immediately:**
+```typescript
+export default (context) => ({
+  execute: async (params) => {
+    // Check for required secrets first
+    const apiKey = context.secrets.API_KEY;
+    if (!apiKey) {
+      throw new Error('API_KEY environment variable is required');
+    }
+
+    // Optionally validate format
+    if (!apiKey.startsWith('sk_')) {
+      throw new Error('API_KEY must start with sk_');
+    }
+
+    // Continue with execution
+    return await callAPI(apiKey, params);
+  }
+})
+```
+
+### 🟢 Optional: Return Structured Data
+
+**Problem:** Unstructured data is harder for the AI to work with and may accidentally include sensitive information.
+
+✅ **Return clean, structured objects:**
+```typescript
+export default (context) => ({
+  outputSchema: z.object({
+    success: z.boolean(),
+    data: z.object({
+      temperature: z.number(),
+      condition: z.string()
+    })
+  }),
+
+  execute: async ({ location }) => {
+    const apiKey = context.secrets.WEATHER_API_KEY;
+    const response = await fetch(`https://api.weather.com?location=${location}`, {
+      headers: { Authorization: `Bearer ${apiKey}` }
+    });
+
+    const rawData = await response.json();
+
+    // ❌ DON'T: Return entire response (may include metadata, API keys, etc.)
+    // return rawData;
+
+    // ✅ DO: Return only what's needed
+    return {
+      success: true,
+      data: {
+        temperature: rawData.main.temp,
+        condition: rawData.weather[0].description
+      }
+    };
+  }
+})
+```
+
+### Security Checklist for Tool Development
+
+Before deploying your tools, verify:
+
+- [ ] **No secrets in console.log statements**
+- [ ] **No secrets in error messages**
+- [ ] **No secrets in return values** (unless intentionally returned)
+- [ ] **Error messages are sanitized** (no stack traces, file paths)
+- [ ] **Approval required for sensitive actions** (email, payments, deletions)
+- [ ] **Rate limiting implemented** for expensive operations
+- [ ] **Secrets validated early** (clear error messages if missing)
+- [ ] **Return values are structured** (use outputSchema)
+- [ ] **Input validation beyond Zod** (business logic checks)
+- [ ] **API responses are filtered** (only return necessary data)
+
+### What the SDK Protects You From
+
+You don't need to worry about:
+
+✅ **AI accessing secrets directly** - The SDK ensures AI-generated code cannot access `context.secrets`
+✅ **AI importing malicious packages** - `require()` and `import` are blocked
+✅ **AI using eval or code generation** - These functions are forbidden
+✅ **AI accessing system resources** - No access to `process`, `global`, filesystem, etc.
+✅ **AI inspecting tool source code** - Tools are wrapped to hide implementation
+
+### What YOU Need to Protect
+
+You are responsible for:
+
+⚠️ **Not logging secrets** - Console output is visible to AI
+⚠️ **Not including secrets in errors** - Error messages are visible to AI
+⚠️ **Implementing approval flows** - SDK provides the mechanism, you decide when to use it
+⚠️ **Rate limiting expensive operations** - SDK doesn't limit tool calls
+⚠️ **Sanitizing tool outputs** - Ensure returned data doesn't leak sensitive info
+
+---
+
 ## Defining Your Agent
 
 Your agent consists of tools that are TypeScript modules:
