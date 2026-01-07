@@ -1,7 +1,7 @@
 {
-  "name": "together-agent-sdk",
+  "name": "together-agent",
   "version": "0.1.0",
-  "description": "A TypeScript CLI SDK",
+  "description": "Build AI agents with custom tools powered by Together AI",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
@@ -16,8 +16,11 @@
     "start": "node dist/cli.js"
   },
   "keywords": [
+    "ai",
+    "agent",
+    "together",
+    "tools",
     "cli",
-    "sdk",
     "typescript"
   ],
   "author": "",

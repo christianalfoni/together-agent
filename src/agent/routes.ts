@@ -5,15 +5,19 @@ import { createCodeTools } from "./tools";
 import * as fs from "fs";
 import * as path from "path";
 import { pathToFileURL } from "url";
-import { randomUUID } from "crypto";
-import { AgentMessage } from "./types";
+import { AgentMessage, ToolExecutionContext, ApprovalResponse } from "./types";
+import {
+  generateApprovalId,
+  createApprovalRequest,
+  resolveApproval,
+} from "./approval";
 
 export const router = Router();
 
-// In-memory session storage
-const sessions = new Map<string, CoreMessage[]>();
+// Agent instance conversation state
+let messages: CoreMessage[] = [];
 
-async function loadTools(env: Record<string, string>) {
+async function loadTools(context: ToolExecutionContext) {
   const toolsPath = process.env.TOOLS_PATH;
 
   if (!toolsPath) {
@@ -36,7 +40,7 @@ async function loadTools(env: Record<string, string>) {
         const toolModule = await import(pathToFileURL(toolPath).href);
         const toolDef =
           typeof toolModule.default === "function"
-            ? toolModule.default(env)
+            ? toolModule.default(context)
             : toolModule.default;
 
         if (
@@ -51,8 +55,8 @@ async function loadTools(env: Record<string, string>) {
           continue;
         }
 
-        // Convert to AI SDK tool format
-        tools[toolName] = tool(toolDef);
+        // Store tool definition (will be wrapped later)
+        tools[toolName] = toolDef;
       } catch (err) {
         console.error(`Failed to load tool ${file}:`, err);
       }
@@ -64,8 +68,155 @@ async function loadTools(env: Record<string, string>) {
   return tools;
 }
 
+function wrapCustomToolWithMessages(
+  toolName: string,
+  toolDef: any,
+  sendMessage: (message: AgentMessage) => void,
+  context: ToolExecutionContext
+) {
+  return {
+    ...toolDef,
+    execute: async (params: any) => {
+      // Generate a unique call ID for this execution
+      const callId = `${toolName}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+      // Send custom tool started message
+      sendMessage({
+        type: "custom_tool_call_started",
+        toolName,
+        args: params,
+        callId,
+      });
+
+      try {
+        const result = await toolDef.execute(params, context);
+
+        // Send custom tool completed message
+        sendMessage({
+          type: "custom_tool_call_completed",
+          toolName,
+          callId,
+          result,
+        });
+
+        return result;
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+
+        // Send custom tool completed message with error
+        sendMessage({
+          type: "custom_tool_call_completed",
+          toolName,
+          callId,
+          error: errorMessage,
+        });
+
+        // Re-throw the error so AI SDK can handle it
+        throw error;
+      }
+    },
+  };
+}
+
+function wrapNativeToolsWithMessages(
+  tools: Record<string, any>,
+  sendMessage: (message: AgentMessage) => void
+) {
+  return {
+    discover_tools: {
+      ...tools.discover_tools,
+      execute: async (params: { query: string }) => {
+        const result = await tools.discover_tools.execute(params);
+
+        // Extract tool names from the result
+        const matchedTools = result.tools?.map((t: any) => t.name) || [];
+
+        // Send discovery completion message
+        sendMessage({
+          type: "tool_discovery_completed",
+          query: params.query,
+          matchedTools,
+        });
+
+        return result;
+      },
+    },
+    execute_tools: {
+      ...tools.execute_tools,
+      execute: async (params: { code: string }) => {
+        // Send started message with code BEFORE execution
+        sendMessage({
+          type: "tool_execution_started",
+          code: params.code,
+        });
+
+        const result = await tools.execute_tools.execute(params);
+
+        // Send completion message with logs AFTER execution
+        sendMessage({
+          type: "tool_execution_completed",
+          logs: result.logs,
+          error: result.error,
+        });
+
+        return result;
+      },
+    },
+    execute_code: {
+      ...tools.execute_code,
+      execute: async (params: { code: string }) => {
+        // Send started message with code BEFORE execution
+        sendMessage({
+          type: "code_execution_started",
+          code: params.code,
+        });
+
+        const result = await tools.execute_code.execute(params);
+
+        // Send completion message with logs AFTER execution
+        sendMessage({
+          type: "code_execution_completed",
+          logs: result.logs,
+          error: result.error,
+        });
+
+        return result;
+      },
+    },
+  };
+}
+
+router.post("/approval", (req, res) => {
+  try {
+    const response: ApprovalResponse = req.body;
+
+    if (!response.approvalId) {
+      return res.status(400).json({ error: "approvalId is required" });
+    }
+
+    if (typeof response.approved !== "boolean") {
+      return res.status(400).json({ error: "approved must be a boolean" });
+    }
+
+    const resolved = resolveApproval(response);
+
+    if (!resolved) {
+      return res.status(404).json({
+        error: "Approval request not found or already resolved",
+      });
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Error in approval endpoint:", error);
+    res.status(500).json({
+      error: "Internal server error handling approval",
+    });
+  }
+});
+
 router.post("/", async (req, res) => {
-  const { prompt, apiKey, env = {}, sessionId: providedSessionId } = req.body;
+  const { prompt, apiKey, secrets = {}, approvalTimeout = 30000 } = req.body;
 
   if (!prompt) {
     return res.status(400).json({ error: "Prompt is required" });
@@ -75,23 +226,64 @@ router.post("/", async (req, res) => {
     return res.status(400).json({ error: "Together API key is required" });
   }
 
+  if (typeof approvalTimeout !== "number" || approvalTimeout <= 0) {
+    return res.status(400).json({
+      error: "approvalTimeout must be a positive number",
+    });
+  }
+
   // Set SSE headers
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
 
-  // Helper function to send SSE message
-  const sendMessage = (message: AgentMessage) => {
+  // Message queue to ensure correct ordering
+  const messageQueue: AgentMessage[] = [];
+
+  // Helper function to queue messages (used by tool wrappers)
+  const queueMessage = (message: AgentMessage) => {
+    messageQueue.push(message);
+  };
+
+  // Helper function to send a message immediately (bypass queue)
+  const sendMessageNow = (message: AgentMessage) => {
     res.write(`data: ${JSON.stringify(message)}\n\n`);
   };
 
+  // Helper function to flush the queue
+  const flushQueue = () => {
+    for (const message of messageQueue) {
+      sendMessageNow(message);
+    }
+    messageQueue.length = 0;
+  };
+
+  // Create requestApproval function for tools
+  const requestApproval = async (
+    payload: any,
+    timeoutMs?: number
+  ): Promise<void> => {
+    const approvalId = generateApprovalId();
+    const timeout = timeoutMs || approvalTimeout;
+
+    // Send approval request message immediately (bypass queue)
+    sendMessageNow({
+      type: "approval_request",
+      approvalId,
+      payload,
+    });
+
+    // Wait for approval response (throws if rejected or timed out)
+    await createApprovalRequest(approvalId, timeout);
+  };
+
+  // Create context object for tools
+  const context: ToolExecutionContext = {
+    secrets: secrets,
+    requestApproval,
+  };
+
   try {
-    // Generate or use existing sessionId
-    const sessionId = providedSessionId || randomUUID();
-
-    // Get or initialize session messages
-    let messages: CoreMessage[] = sessions.get(sessionId) || [];
-
     // Add user message to conversation history
     const userMessage: CoreMessage = {
       role: "user",
@@ -100,71 +292,68 @@ router.post("/", async (req, res) => {
     messages.push(userMessage);
 
     const together = createTogetherAI({ apiKey });
-    const tools = await loadTools(env);
+    const customTools = await loadTools(context);
+
+    // Wrap custom tools to send started/completed messages, then convert to AI SDK format
+    const wrappedCustomTools: Record<string, any> = {};
+    for (const [toolName, toolDef] of Object.entries(customTools)) {
+      const wrappedTool = wrapCustomToolWithMessages(
+        toolName,
+        toolDef,
+        queueMessage,
+        context
+      );
+      // Convert to AI SDK tool format AFTER wrapping for messages
+      wrappedCustomTools[toolName] = tool(wrappedTool);
+    }
+
+    // Create code tools (native tools)
+    const codeTools = createCodeTools(wrappedCustomTools);
+
+    // Wrap native tools to send completion messages
+    const wrappedNativeTools = wrapNativeToolsWithMessages(codeTools, queueMessage);
 
     const result = streamText({
       model: together("moonshotai/Kimi-K2-Instruct-0905"),
       messages,
-      tools: createCodeTools(tools),
+      tools: wrappedNativeTools,
       stopWhen: stepCountIs(20),
     });
-
-    // Buffer text deltas and flush when we hit tool calls
-    let textBuffer = "";
-
-    const flushText = () => {
-      if (textBuffer) {
-        sendMessage({
-          type: "text",
-          content: textBuffer,
-        });
-        textBuffer = "";
-      }
-    };
 
     // Use fullStream to get events in the correct order
     for await (const chunk of result.fullStream) {
       switch (chunk.type) {
         case "text-delta":
-          // Accumulate text deltas
+          // Add text to queue immediately, or update existing text message
           const text = (chunk as any).text;
           if (text) {
-            textBuffer += text;
+            // Check if the last message in queue is a text message
+            const lastMessage = messageQueue[messageQueue.length - 1];
+            if (lastMessage && lastMessage.type === "text") {
+              // Update existing text message in place
+              (lastMessage as any).content += text;
+            } else {
+              // Create new text message at the front of the queue
+              messageQueue.push({
+                type: "text",
+                content: text,
+              });
+            }
           }
           break;
 
         case "tool-call":
-          // Flush any accumulated text before the tool call
-          flushText();
-
-          // Send tool call when it's requested
-          sendMessage({
-            type: "tool_call_requested",
-            toolName: chunk.toolName,
-            args: (chunk as any).input,
-            callId: chunk.toolCallId,
-          });
+          // Don't need to do anything - text is already in queue if there is any
           break;
 
         case "tool-result":
-          // Flush any accumulated text after the tool result
-          flushText();
-
-          // Only send completion message if there's an error
-          if ((chunk as any).error || chunk.result?.error) {
-            sendMessage({
-              type: "tool_call_completed",
-              toolName: chunk.toolName,
-              callId: chunk.toolCallId,
-              result: chunk.result,
-              error: (chunk as any).error || chunk.result?.error,
-            });
-          }
+          // Flush the queue - text message will be first, then tool messages
+          flushQueue();
           break;
 
         case "finish":
-          // Flush any remaining text at the end
-          flushText();
+          // Flush any remaining messages
+          flushQueue();
           break;
       }
     }
@@ -213,17 +402,16 @@ router.post("/", async (req, res) => {
       .filter((msg): msg is CoreMessage => msg !== null);
 
     // Store the conversation history
-    sessions.set(sessionId, filteredMessages);
+    messages = filteredMessages;
 
     // Send done message
-    sendMessage({
+    sendMessageNow({
       type: "done",
-      sessionId,
     });
 
     res.end();
   } catch (error) {
-    sendMessage({
+    sendMessageNow({
       type: "error",
       error: error instanceof Error ? error.message : "An error occurred",
     });

@@ -6,13 +6,13 @@ export default {
   inputSchema: z.object({
     location: z.string().describe("The city name"),
   }),
-  execute: async ({ location }) => {
+  execute: async ({ location }: { location: string }, context?: any) => {
     // First, geocode the location to get coordinates
     const geocodeUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(
       location.toLowerCase()
     )}&count=1&language=en&format=json`;
     const geocodeResponse = await fetch(geocodeUrl);
-    const geocodeData = await geocodeResponse.json();
+    const geocodeData = (await geocodeResponse.json()) as any;
 
     if (!geocodeData.results || geocodeData.results.length === 0) {
       throw new Error(`Location "${location}" not found`);
@@ -23,12 +23,12 @@ export default {
     // Get current weather for the coordinates
     const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch`;
     const weatherResponse = await fetch(weatherUrl);
-    const weatherData = await weatherResponse.json();
+    const weatherData = (await weatherResponse.json()) as any;
 
     const current = weatherData.current;
 
     // Map weather codes to conditions
-    const weatherCodeMap = {
+    const weatherCodeMap: Record<number, string> = {
       0: "Clear sky",
       1: "Mainly clear",
       2: "Partly cloudy",

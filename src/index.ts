@@ -7,13 +7,11 @@ interface TogetherAgentSDKOptions {
 }
 
 interface PromptOptions {
-  env?: Record<string, string>;
-  sessionId?: string;
+  secrets?: Record<string, string>;
 }
 
 interface PromptResult {
   success: boolean;
-  sessionId?: string;
   response?: string;
   error?: string;
   timestamp?: string;
@@ -21,6 +19,8 @@ interface PromptResult {
 
 interface Agent {
   prompt: (message: string, options?: PromptOptions) => Promise<PromptResult>;
+  approve: (approvalId: string) => Promise<void>;
+  reject: (approvalId: string) => Promise<void>;
   sandboxId: string;
   url: string;
 }
@@ -61,8 +61,7 @@ export class TogetherAgentSDK {
           const payload = {
             prompt: message,
             apiKey: this.apiKey,
-            env: options.env || {},
-            ...(options.sessionId && { sessionId: options.sessionId }),
+            secrets: options.secrets || {},
           };
 
           const response = await fetch(url, {
@@ -79,6 +78,42 @@ export class TogetherAgentSDK {
           }
 
           return await response.json() as PromptResult;
+        },
+        approve: async (approvalId: string) => {
+          const approvalUrl = `${url}/approval`;
+          const response = await fetch(approvalUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              approvalId,
+              approved: true,
+            }),
+          });
+
+          if (!response.ok) {
+            const text = await response.text();
+            throw new Error(`Approval request failed with status ${response.status}: ${text}`);
+          }
+        },
+        reject: async (approvalId: string) => {
+          const approvalUrl = `${url}/approval`;
+          const response = await fetch(approvalUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              approvalId,
+              approved: false,
+            }),
+          });
+
+          if (!response.ok) {
+            const text = await response.text();
+            throw new Error(`Rejection request failed with status ${response.status}: ${text}`);
+          }
         },
       };
 

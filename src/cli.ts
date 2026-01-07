@@ -40,8 +40,15 @@ program
       name: path.basename(absolutePath),
       version: "1.0.0",
       type: "module",
+      scripts: {
+        build: "tsc",
+      },
       dependencies: {
         zod: "latest",
+      },
+      devDependencies: {
+        typescript: "latest",
+        "@types/node": "latest",
       },
     };
 
@@ -50,7 +57,32 @@ program
       JSON.stringify(packageJson, null, 2)
     );
 
-    // Create getWeather.js
+    // Create tsconfig.json
+    const tsconfigContent = {
+      compilerOptions: {
+        target: "ES2020",
+        module: "ESNext",
+        lib: ["ES2020"],
+        outDir: "./dist",
+        rootDir: "./",
+        declaration: true,
+        strict: true,
+        esModuleInterop: true,
+        skipLibCheck: true,
+        forceConsistentCasingInFileNames: true,
+        resolveJsonModule: true,
+        moduleResolution: "bundler",
+      },
+      include: ["*.ts"],
+      exclude: ["node_modules", "dist"],
+    };
+
+    fs.writeFileSync(
+      path.join(absolutePath, "tsconfig.json"),
+      JSON.stringify(tsconfigContent, null, 2)
+    );
+
+    // Create getWeather.ts
     const getWeatherContent = `import { z } from 'zod'
 
 export default {
@@ -66,7 +98,7 @@ export default {
 `;
 
     fs.writeFileSync(
-      path.join(absolutePath, "getWeather.js"),
+      path.join(absolutePath, "getWeather.ts"),
       getWeatherContent
     );
 
@@ -122,15 +154,41 @@ program
       process.exit(1);
     }
 
+    // Check if tools are TypeScript and need compilation
+    const hasTsConfig = fs.existsSync(path.join(absoluteToolsPath, "tsconfig.json"));
+    let toolsRuntimePath = absoluteToolsPath;
+
+    if (hasTsConfig) {
+      console.log("Compiling TypeScript tools...");
+      try {
+        execSync("npm run build", {
+          cwd: absoluteToolsPath,
+          stdio: "inherit",
+        });
+        // Point to the compiled output directory
+        toolsRuntimePath = path.join(absoluteToolsPath, "dist");
+
+        if (!fs.existsSync(toolsRuntimePath)) {
+          console.error(`Error: Compilation succeeded but dist folder not found at ${toolsRuntimePath}`);
+          process.exit(1);
+        }
+
+        console.log("✓ Tools compiled successfully");
+      } catch (error) {
+        console.error("Failed to compile TypeScript tools");
+        process.exit(1);
+      }
+    }
+
     console.log(`Starting agent server on port ${port}...`);
-    console.log(`Loading tools from: ${absoluteToolsPath}`);
+    console.log(`Loading tools from: ${toolsRuntimePath}`);
 
     // Get the path to the agent script
     const agentPath = path.join(__dirname, "agent", "index.js");
 
     // Start the agent server
     const agentProcess = spawn("node", [agentPath], {
-      env: { ...process.env, PORT: port, TOOLS_PATH: absoluteToolsPath },
+      env: { ...process.env, PORT: port, TOOLS_PATH: toolsRuntimePath },
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -165,19 +223,13 @@ program
       process.exit(0);
     });
 
-    let sessionId: string | null = null;
-
     const promptUser = () => {
       const rl = readline.createInterface({
         input: process.stdin,
         output: process.stdout,
       });
 
-      const promptMessage = sessionId
-        ? "\nEnter your prompt (or 'exit' to quit): "
-        : "\nEnter your prompt: ";
-
-      rl.question(promptMessage, async (prompt) => {
+      rl.question("\nEnter your prompt (or 'exit' to quit): ", async (prompt) => {
         rl.close();
 
         const trimmedPrompt = prompt.trim();
@@ -197,16 +249,11 @@ program
         console.log("\nSending prompt to agent...\n");
 
         try {
-          const requestBody: any = {
+          const requestBody = {
             prompt: trimmedPrompt,
             apiKey,
-            env: toolEnv,
+            secrets: toolEnv,
           };
-
-          // Include sessionId if we have one
-          if (sessionId) {
-            requestBody.sessionId = sessionId;
-          }
 
           const response = await fetch(`http://localhost:${port}/prompt`, {
             method: "POST",
@@ -250,42 +297,128 @@ program
                 try {
                   const message = JSON.parse(data);
 
-                  switch (message.type) {
-                    case "tool_call_requested":
+                  // Handle approval requests
+                  if (message.type === "approval_request") {
+                    try {
                       console.log("\n" + "─".repeat(70));
+                      console.log("🔐 APPROVAL REQUIRED");
+                      console.log("Payload:", JSON.stringify(message.payload, null, 2));
+                      console.log("─".repeat(70));
 
-                      // Special handling for code execution tools
-                      if (message.toolName === "execute_code") {
-                        console.log("💻 EXECUTE_CODE");
-                        if (message.args?.code) {
-                          console.log(message.args.code);
-                        }
-                      } else if (message.toolName === "execute_tools") {
-                        console.log("⚙️  EXECUTE_TOOLS");
-                        if (message.args?.code) {
-                          console.log(message.args.code);
-                        }
-                      } else if (message.toolName === "discover_tools") {
-                        console.log("🔍 DISCOVER_TOOLS");
-                        if (message.args?.query) {
-                          console.log(`Query: ${message.args.query}`);
-                        }
-                      } else {
-                        // For other tools, show the tool name and args
-                        console.log(`🔧 ${message.toolName.toUpperCase()}`);
-                        if (message.args) {
-                          console.log(JSON.stringify(message.args, null, 2));
-                        }
+                      // Prompt user for yes/no
+                      const approvalRl = readline.createInterface({
+                        input: process.stdin,
+                        output: process.stdout,
+                      });
+
+                      const answer = await new Promise<string>((resolve) => {
+                        approvalRl.question("Approve? (yes/no): ", resolve);
+                      });
+
+                      approvalRl.close();
+
+                      const approved = answer.trim().toLowerCase() === "yes";
+
+                      // Send approval response to server
+                      const approvalResponse = await fetch(`http://localhost:${port}/prompt/approval`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          approvalId: message.approvalId,
+                          approved,
+                        }),
+                      });
+
+                      if (!approvalResponse.ok) {
+                        console.error(`Failed to send approval response: ${approvalResponse.status}`);
                       }
 
+                      console.log(approved ? "✅ Approved" : "❌ Rejected");
+                    } catch (error) {
+                      console.error("Error handling approval request:", error);
+                    }
+                    continue;
+                  }
+
+                  switch (message.type) {
+                    case "tool_discovery_completed":
+                      console.log("\n" + "─".repeat(70));
+                      console.log("🔍 TOOL DISCOVERY");
+                      console.log(`Query: ${message.query}`);
+                      if (message.matchedTools.length > 0) {
+                        console.log(`Matched tools: ${message.matchedTools.join(", ")}`);
+                      } else {
+                        console.log("No tools matched");
+                      }
                       console.log("─".repeat(70));
                       break;
 
-                    case "tool_call_completed":
-                      // Only show if there's an error
+                    case "tool_execution_started":
                       console.log("\n" + "─".repeat(70));
-                      console.log(`❌ ${message.toolName.toUpperCase()} ERROR`);
-                      console.log("Error:", message.error);
+                      console.log("⚙️  TOOL EXECUTION");
+                      console.log(message.code);
+                      console.log("─".repeat(70));
+                      break;
+
+                    case "tool_execution_completed":
+                      if (message.error) {
+                        console.log("\n" + "─".repeat(70));
+                        console.log("⚙️  TOOL EXECUTION - ERROR");
+                        console.log("Error:", message.error);
+                        console.log("─".repeat(70));
+                      } else if (message.logs && message.logs.length > 0) {
+                        console.log("\n" + "─".repeat(70));
+                        console.log("⚙️  TOOL EXECUTION - LOGS");
+                        message.logs.forEach((log: string) => console.log(log));
+                        console.log("─".repeat(70));
+                      }
+                      break;
+
+                    case "code_execution_started":
+                      console.log("\n" + "─".repeat(70));
+                      console.log("💻 CODE EXECUTION");
+                      console.log(message.code);
+                      console.log("─".repeat(70));
+                      break;
+
+                    case "code_execution_completed":
+                      if (message.error) {
+                        console.log("\n" + "─".repeat(70));
+                        console.log("💻 CODE EXECUTION - ERROR");
+                        console.log("Error:", message.error);
+                        console.log("─".repeat(70));
+                      } else if (message.logs && message.logs.length > 0) {
+                        console.log("\n" + "─".repeat(70));
+                        console.log("💻 CODE EXECUTION - LOGS");
+                        message.logs.forEach((log: string) => console.log(log));
+                        console.log("─".repeat(70));
+                      }
+                      break;
+
+                    case "custom_tool_call_started":
+                      // Custom tools starting
+                      console.log("\n" + "─".repeat(70));
+                      console.log(`▶️  ${message.toolName.toUpperCase()} - STARTED`);
+                      if (message.args) {
+                        console.log(JSON.stringify(message.args, null, 2));
+                      }
+                      console.log("─".repeat(70));
+                      break;
+
+                    case "custom_tool_call_completed":
+                      // Custom tools completing
+                      console.log("\n" + "─".repeat(70));
+                      if (message.error) {
+                        console.log(`❌ ${message.toolName.toUpperCase()} - ERROR`);
+                        console.log("Error:", message.error);
+                      } else {
+                        console.log(`✅ ${message.toolName.toUpperCase()} - COMPLETED`);
+                        if (message.result !== undefined) {
+                          console.log("Result:", typeof message.result === 'object'
+                            ? JSON.stringify(message.result, null, 2)
+                            : message.result);
+                        }
+                      }
                       console.log("─".repeat(70));
                       break;
 
@@ -305,8 +438,7 @@ program
                       break;
 
                     case "done":
-                      // Store sessionId for continuous conversation
-                      sessionId = message.sessionId;
+                      // Conversation continues automatically
                       break;
                   }
                 } catch (e) {
@@ -365,15 +497,55 @@ program
       process.exit(1);
     }
 
+    // Check if tools are TypeScript
+    const hasTsConfig = fs.existsSync(path.join(absoluteToolsPath, "tsconfig.json"));
+
+    if (!hasTsConfig) {
+      console.error("Error: No tsconfig.json found. Tools must be written in TypeScript.");
+      process.exit(1);
+    }
+
+    // Compile TypeScript tools
+    console.log("Compiling TypeScript tools...");
+    try {
+      execSync("npm run build", {
+        cwd: absoluteToolsPath,
+        stdio: "inherit",
+      });
+    } catch (error) {
+      console.error("Failed to compile TypeScript tools");
+      process.exit(1);
+    }
+
+    const compiledToolsPath = path.join(absoluteToolsPath, "dist");
+    if (!fs.existsSync(compiledToolsPath)) {
+      console.error(`Error: Compilation succeeded but dist folder not found at ${compiledToolsPath}`);
+      process.exit(1);
+    }
+
+    console.log("✓ Tools compiled successfully");
+
     // Create a temp folder
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "together-agent-"));
     console.log(`Created temp directory: ${tempDir}`);
 
     try {
-      // Copy the tools folder to temp
+      // Copy the compiled tools to temp
       const tempToolsPath = path.join(tempDir, "tools");
-      console.log("Copying tools folder...");
-      copyRecursiveSync(absoluteToolsPath, tempToolsPath);
+      console.log("Copying compiled tools...");
+      copyRecursiveSync(compiledToolsPath, tempToolsPath);
+
+      // Copy package.json without devDependencies and scripts
+      const packageJsonPath = path.join(absoluteToolsPath, "package.json");
+      if (fs.existsSync(packageJsonPath)) {
+        const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+        delete packageJson.devDependencies;
+        delete packageJson.scripts;
+        fs.writeFileSync(
+          path.join(tempToolsPath, "package.json"),
+          JSON.stringify(packageJson, null, 2)
+        );
+      }
 
       // Copy the agent folder from dist
       const agentSourcePath = path.join(__dirname, "agent");

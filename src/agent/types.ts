@@ -1,19 +1,55 @@
 export type AgentMessage =
-  | ToolCallRequestedMessage
-  | ToolCallCompletedMessage
+  | ToolDiscoveryCompletedMessage
+  | ToolExecutionStartedMessage
+  | ToolExecutionCompletedMessage
+  | CodeExecutionStartedMessage
+  | CodeExecutionCompletedMessage
+  | CustomToolCallStartedMessage
+  | CustomToolCallCompletedMessage
+  | ApprovalRequestMessage
   | TextMessage
   | ErrorMessage
   | DoneMessage;
 
-export interface ToolCallRequestedMessage {
-  type: "tool_call_requested";
+// Native tool messages
+export interface ToolDiscoveryCompletedMessage {
+  type: "tool_discovery_completed";
+  query: string;
+  matchedTools: string[];
+}
+
+export interface ToolExecutionStartedMessage {
+  type: "tool_execution_started";
+  code: string;
+}
+
+export interface ToolExecutionCompletedMessage {
+  type: "tool_execution_completed";
+  logs?: string[];
+  error?: string;
+}
+
+export interface CodeExecutionStartedMessage {
+  type: "code_execution_started";
+  code: string;
+}
+
+export interface CodeExecutionCompletedMessage {
+  type: "code_execution_completed";
+  logs?: string[];
+  error?: string;
+}
+
+// Custom tool messages (user-defined tools)
+export interface CustomToolCallStartedMessage {
+  type: "custom_tool_call_started";
   toolName: string;
   args: any;
   callId: string;
 }
 
-export interface ToolCallCompletedMessage {
-  type: "tool_call_completed";
+export interface CustomToolCallCompletedMessage {
+  type: "custom_tool_call_completed";
   toolName: string;
   callId: string;
   result?: any;
@@ -32,5 +68,29 @@ export interface ErrorMessage {
 
 export interface DoneMessage {
   type: "done";
-  sessionId: string;
+}
+
+// Approval messages
+export interface ApprovalRequestMessage {
+  type: "approval_request";
+  approvalId: string;
+  payload: any;
+}
+
+export interface ApprovalResponse {
+  approvalId: string;
+  approved: boolean;
+}
+
+export interface PendingApproval {
+  resolve: () => void;
+  reject: (error: Error) => void;
+  timeoutId: NodeJS.Timeout;
+  timestamp: number;
+}
+
+// Tool execution context
+export interface ToolExecutionContext {
+  secrets: Record<string, string>;
+  requestApproval: (payload: any, timeoutMs?: number) => Promise<void>;
 }

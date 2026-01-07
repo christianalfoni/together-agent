@@ -1,87 +1,438 @@
-# Together Agent SDK
+# Together Agent
 
-A TypeScript SDK and CLI for building and deploying AI agents with custom tools powered by Together AI's API.
-
-## Installation
-
-```bash
-npm install together-agent-sdk
-```
-
-For CLI usage, install globally:
-
-```bash
-npm install -g together-agent-sdk
-```
-
-Or use directly with npx:
-
-```bash
-npx together-agent-sdk
-```
+Build AI agents with custom tools powered by Together AI.
 
 ## Quick Start
 
-### Development Workflow
-
-1. **Initialize** a tools directory
-2. **Run** locally to test your agent
-3. **Deploy** to CodeSandbox for production
-4. **Use** the Node.js SDK to interact with your deployed agent
-
-### 1. Initialize a Tools Directory
-
-Create a new tools directory with an example tool:
-
+**1. Install**
 ```bash
-together-agent init ./tools
+npm install -g together-agent
 ```
 
-This creates:
-- A `tools/` directory with a sample `getWeather.js` tool
-- A `package.json` with required dependencies (zod)
-- Automatically installs dependencies
-
-### 2. Set Up Environment Variables
-
-The SDK requires a Together AI API key:
-
+**2. Create your agent**
 ```bash
-export TOGETHER_API_KEY="your-together-api-key"
+export TOGETHER_API_KEY="your-key"
+together-agent init ./my-agent
 ```
 
-Get your API key at [together.ai](https://www.together.ai)
-
-### 3. Run Locally to Test
-
-Start the agent server and interact with your tools:
-
+**3. Test locally**
 ```bash
-together-agent run ./tools
+together-agent run ./my-agent
+> What's the weather in Tokyo?
 ```
 
-With options:
-
+**4. Deploy**
 ```bash
-together-agent run ./tools --port 3000 --env BRAVE_SEARCH_API_KEY=your-key --env OTHER_API_KEY=another-key
+together-agent deploy ./my-agent
+# Returns: pt_abc123 (your template ID)
 ```
 
-This starts an interactive session where you can test your agent locally.
+**5. Use in your app**
+```typescript
+import { TogetherAgentSDK } from 'together-agent';
 
-### 4. Deploy to Production
+const sdk = new TogetherAgentSDK({ apiKey: process.env.TOGETHER_API_KEY });
+const agent = await sdk.createAgent('pt_abc123');
 
-Once you've tested locally, deploy your agent to CodeSandbox:
-
-```bash
-together-agent deploy ./tools
+// Stream messages from the agent
+for await (const message of agent.prompt('What is the weather in Tokyo?')) {
+  if (message.type === 'text') {
+    console.log(message.content);
+  }
+}
 ```
 
-This will:
-- Package your tools and agent
-- Deploy to CodeSandbox
-- Return your agent template ID and endpoint URL
+## Defining Your Agent
 
-Example output:
+Your agent consists of tools that are TypeScript modules:
+
+```typescript
+// my-agent/getWeather.ts
+import { z } from 'zod';
+
+export default {
+  description: 'weather forecast temperature climate conditions degrees fahrenheit celsius rain snow wind humidity',
+  inputSchema: z.object({
+    location: z.string().describe('City name'),
+  }),
+  execute: async ({ location }) => {
+    // Your implementation
+    return { temperature: 72, condition: 'sunny' };
+  },
+}
+```
+
+**With environment variables (secrets):**
+
+```typescript
+// my-agent/sendEmail.ts
+export default (context) => ({
+  description: 'email send message mail recipient address notification letter correspondence',
+  inputSchema: z.object({
+    to: z.string().describe('Email address'),
+    subject: z.string().describe('Subject line'),
+    body: z.string().describe('Email content'),
+  }),
+  execute: async ({ to, subject, body }) => {
+    const apiKey = context.secrets.SENDGRID_API_KEY;
+    // Send email using apiKey
+    return { success: true };
+  },
+})
+```
+
+Pass secrets via CLI:
+```bash
+together-agent run ./my-agent --env SENDGRID_API_KEY=xyz
+```
+
+Or in your application:
+```typescript
+await agent.prompt('Send an email...', {
+  secrets: { SENDGRID_API_KEY: 'xyz' }
+});
+```
+
+---
+
+## How It Works
+
+### Architecture
+
+Together Agent combines three key components:
+
+1. **AI Model** - Interprets user requests and decides which tools to use
+2. **Native Tools** - Built-in tools that discover and execute your custom tools
+3. **Custom Tools** - Your domain-specific tools (weather, email, etc.)
+
+### The Three Native Tools
+
+Every agent has three built-in tools that work together to execute tasks:
+
+#### 1. `discover_tools`
+Searches your custom tools by analyzing descriptions and schemas.
+
+```
+User: "What's the weather in Paris?"
+Agent: Uses discover_tools("weather temperature forecast")
+Result: ["getWeather"]
+```
+
+#### 2. `execute_tools`
+Executes JavaScript code with access to your custom tools.
+
+```javascript
+// Agent generates and executes:
+const weather = await tools.getWeather({ location: "Paris" });
+console.log(weather);
+```
+
+The code is validated for safety (no `require()`, `import`, `eval()`, etc.) and executed in a sandboxed environment.
+
+#### 3. `execute_code`
+Executes arbitrary JavaScript for computation, data manipulation, etc.
+
+```javascript
+// For tasks like calculations:
+const result = Math.sqrt(144) * 2;
+console.log(result);
+```
+
+No access to tools or external resources - only base JavaScript (Array, Object, Math, Date, etc.).
+
+### Execution Flow
+
+```
+1. User sends prompt → "What's the weather in Paris?"
+
+2. Agent discovers tools
+   discover_tools("weather forecast temperature")
+   → matches: ["getWeather"]
+
+3. Agent generates code
+   execute_tools(`
+     const weather = await tools.getWeather({ location: "Paris" });
+     console.log(weather);
+   `)
+   → executes getWeather with validated input
+   → returns: { temperature: 62, condition: "cloudy" }
+
+4. Agent responds
+   → "The weather in Paris is 62°F and cloudy."
+```
+
+### Message Streaming
+
+Agents stream real-time progress messages via Server-Sent Events (SSE):
+
+```typescript
+// Message types:
+{
+  type: "tool_discovery_completed",
+  matchedTools: ["getWeather"]
+}
+
+{
+  type: "tool_execution_started",
+  code: "const weather = await tools.getWeather(...);"
+}
+
+{
+  type: "custom_tool_call_started",
+  toolName: "getWeather",
+  args: { location: "Paris" }
+}
+
+{
+  type: "custom_tool_call_completed",
+  toolName: "getWeather",
+  result: { temperature: 62, condition: "cloudy" }
+}
+
+{
+  type: "text",
+  content: "The weather in Paris is 62°F and cloudy."
+}
+
+{
+  type: "done"
+}
+```
+
+---
+
+## Secrets Management
+
+Tools often need API keys, credentials, or configuration. Together Agent provides a secure way to pass these at runtime.
+
+### Tool Context
+
+Every tool receives a `context` object with:
+
+```typescript
+interface ToolExecutionContext {
+  secrets: Record<string, string>;        // Environment variables
+  requestApproval: (payload, timeout) => Promise<void>;  // User approval
+}
+```
+
+### Accessing Secrets
+
+Export a function instead of an object to access context:
+
+```typescript
+// my-agent/searchWeb.ts
+export default (context) => ({
+  description: 'web search internet browser google bing brave online webpage website url link crawl index',
+  inputSchema: z.object({
+    query: z.string(),
+  }),
+  execute: async ({ query }) => {
+    const apiKey = context.secrets.BRAVE_API_KEY;
+
+    if (!apiKey) {
+      throw new Error('BRAVE_API_KEY is required');
+    }
+
+    // Use the API key
+    const response = await fetch(`https://api.brave.com?key=${apiKey}`);
+    return response.json();
+  },
+})
+```
+
+### Passing Secrets
+
+**CLI (local testing):**
+```bash
+together-agent run ./my-agent \
+  --env BRAVE_API_KEY=abc123 \
+  --env SENDGRID_KEY=xyz789
+```
+
+**In your application:**
+```typescript
+await agent.prompt('Search for AI news', {
+  secrets: {
+    BRAVE_API_KEY: process.env.BRAVE_API_KEY,
+    SENDGRID_KEY: process.env.SENDGRID_KEY,
+  }
+});
+```
+
+Secrets are:
+- Never stored in code or version control
+- Passed at runtime per request
+- Only available during tool execution
+- Not included in conversation history
+
+---
+
+## Approval System
+
+Some tools perform sensitive actions (send emails, delete data, charge cards). The approval system lets you request user confirmation before execution.
+
+### Requesting Approval
+
+```typescript
+export default (context) => ({
+  description: 'Send an email to a recipient',
+  inputSchema: z.object({
+    to: z.string(),
+    subject: z.string(),
+    body: z.string(),
+  }),
+  execute: async ({ to, subject, body }) => {
+    // Request approval before sending
+    await context.requestApproval({
+      action: 'send_email',
+      to,
+      subject,
+      body,
+      warning: 'This will send a real email',
+    });
+
+    // If we get here, user approved
+    // Send the email...
+    return { success: true };
+  },
+})
+```
+
+### How It Works
+
+1. **Tool calls `requestApproval(payload, timeout)`**
+   - `payload`: Any data (object, string, etc.) shown to the user
+   - `timeout`: Milliseconds to wait (default: 30000)
+
+2. **Agent sends approval request message**
+   ```typescript
+   {
+     type: "approval_request",
+     approvalId: "approval-123",
+     payload: {
+       action: "send_email",
+       to: "user@example.com",
+       warning: "This will send a real email"
+     }
+   }
+   ```
+
+3. **Client prompts user** (CLI shows interactive prompt)
+   ```
+   🔐 APPROVAL REQUIRED
+   {
+     "action": "send_email",
+     "to": "user@example.com",
+     "warning": "This will send a real email"
+   }
+   Approve? (yes/no):
+   ```
+
+4. **Client responds via `/prompt/approval` endpoint**
+   ```typescript
+   POST /prompt/approval
+   {
+     "approvalId": "approval-123",
+     "approved": true
+   }
+   ```
+
+5. **Tool execution continues or throws**
+   - If approved: execution continues
+   - If rejected: throws error with message "User declined to proceed"
+   - If timeout: throws error "User did not confirm within N seconds"
+
+---
+
+## API Reference
+
+### CLI Commands
+
+### `init <path>`
+
+Initialize a new agent with example tools.
+
+```bash
+together-agent init ./my-agent
+```
+
+Creates:
+- `package.json` with dependencies (zod, typescript)
+- `tsconfig.json` for TypeScript compilation
+- `getWeather.ts` example tool
+- Runs `npm install` automatically
+
+### `run <agent-path> [options]`
+
+Run your agent locally for testing.
+
+```bash
+together-agent run ./my-agent [options]
+```
+
+**Options:**
+- `-p, --port <port>` - Port to run server on (default: 3000)
+- `-e, --env <KEY=VALUE>` - Environment variables (can be repeated)
+
+**Examples:**
+```bash
+# Basic usage
+together-agent run ./my-agent
+
+# Custom port
+together-agent run ./my-agent -p 8080
+
+# With secrets
+together-agent run ./my-agent \
+  --env BRAVE_API_KEY=abc123 \
+  --env SENDGRID_KEY=xyz789
+```
+
+**Interactive session:**
+```
+Agent server running on http://localhost:3000
+
+Enter your prompt (or 'exit' to quit): What's the weather?
+
+─────────────────────────────────────────────────
+🔍 TOOL DISCOVERY
+Matched tools: getWeather
+─────────────────────────────────────────────────
+
+─────────────────────────────────────────────────
+▶️  GETWEATHER - STARTED
+{ "location": "current" }
+─────────────────────────────────────────────────
+
+─────────────────────────────────────────────────
+✅ GETWEATHER - COMPLETED
+Result: { "temperature": 72, "condition": "sunny" }
+─────────────────────────────────────────────────
+
+─────────────────────────────────────────────────
+💬 RESPONSE
+The weather is currently 72°F and sunny.
+─────────────────────────────────────────────────
+
+Enter your prompt (or 'exit' to quit):
+```
+
+### `deploy <agent-path>`
+
+Deploy your agent to CodeSandbox for production use.
+
+```bash
+together-agent deploy ./my-agent
+```
+
+**Process:**
+1. Compiles your agent's TypeScript tools to JavaScript
+2. Creates deployment package with agent runtime
+3. Deploys to CodeSandbox
+4. Returns template ID and endpoint URL
+
+**Output:**
 ```
 ✓ Deployment complete!
 
@@ -91,185 +442,27 @@ POST https://6mtpjl-3000.csb.app/prompt
 {
   "prompt": "How are you?",
   "apiKey": "",
-  "env": {}
+  "secrets": {}
 }
 ```
 
-### 5. Use the Node.js SDK
+Save the template ID to use with the Node.js client.
 
-After deploying, use the SDK to interact with your agent programmatically:
+### Node.js Client
 
-```typescript
-import { TogetherAgentSDK } from 'together-agent-sdk';
+#### `TogetherAgentSDK`
 
-// Initialize SDK with your Together AI API key
-const sdk = new TogetherAgentSDK({
-  apiKey: process.env.TOGETHER_API_KEY // or pass directly
-});
-
-// Create an agent from your deployed template
-const agent = await sdk.createAgent('pt_26zjNr5yoewkZY9NefgnmH');
-
-// Send prompts to your agent
-const result = await agent.prompt('What is the weather in San Francisco?', {
-  env: {
-    // Pass environment variables your tools need
-    BRAVE_SEARCH_API_KEY: process.env.BRAVE_SEARCH_API_KEY
-  }
-});
-
-console.log(result.response);
-
-// Continue the conversation with session support
-const followUp = await agent.prompt('How about New York?', {
-  sessionId: result.sessionId // Maintains conversation context
-});
-```
-
-## Complete Example
-
-Here's a complete workflow from initialization to production usage:
-
-```bash
-# 1. Set up your API key
-export TOGETHER_API_KEY="your-together-api-key"
-
-# 2. Initialize a new project
-together-agent init ./my-agent-tools
-
-# 3. Add your custom tools to ./my-agent-tools/
-# (Edit the files or add new .js files)
-
-# 4. Test locally
-together-agent run ./my-agent-tools
-
-# In the interactive prompt:
-# > What's the weather in London?
-# > exit
-
-# 5. Deploy to production
-together-agent deploy ./my-agent-tools
-
-# Output shows your template ID: pt_26zjNr5yoewkZY9NefgnmH
-```
-
-Then use it in your application:
+Main client class for interacting with deployed agents.
 
 ```typescript
-// app.ts
-import { TogetherAgentSDK } from 'together-agent-sdk';
+import { TogetherAgentSDK } from 'together-agent';
 
 const sdk = new TogetherAgentSDK({
-  apiKey: process.env.TOGETHER_API_KEY
-});
-
-const agent = await sdk.createAgent('pt_26zjNr5yoewkZY9NefgnmH');
-
-// Use the agent
-const result = await agent.prompt('What is the weather in London?');
-console.log(result.response);
-```
-
-## CLI Commands
-
-### `init <path>`
-
-Initialize a new tools directory with example files.
-
-```bash
-together-agent init ./my-tools
-```
-
-**Arguments:**
-- `<path>` - Path where the tools directory will be created
-
-### `run <tools-path>`
-
-Start the agent server locally and begin an interactive session for testing.
-
-```bash
-together-agent run ./tools [options]
-```
-
-**Arguments:**
-- `<tools-path>` - Path to the directory containing your tool files
-
-**Options:**
-- `-p, --port <port>` - Port to run the agent server on (default: 3000)
-- `-e, --env <KEY=VALUE>` - Environment variables to pass to tools (can be specified multiple times)
-
-**Examples:**
-
-```bash
-# Basic usage
-together-agent run ./tools
-
-# Custom port
-together-agent run ./tools --port 8080
-
-# Pass environment variables to tools
-together-agent run ./tools --env API_KEY=abc123 --env API_URL=https://api.example.com
-
-# Combine options
-together-agent run ./tools -p 8080 -e API_KEY=abc123
-```
-
-### `deploy <tools-path>`
-
-Deploy your agent to CodeSandbox for production use.
-
-```bash
-together-agent deploy ./tools
-```
-
-**Arguments:**
-- `<tools-path>` - Path to the directory containing your tool files
-
-**What it does:**
-1. Creates a temporary deployment package with your tools and agent
-2. Deploys to CodeSandbox using the Together AI API key
-3. Returns the agent template ID and endpoint URL
-
-**Output:**
-- **Agent template id**: Use this with the Node.js SDK to create agent instances
-- **POST URL**: The endpoint URL with example payload structure
-
-**Example:**
-
-```bash
-together-agent deploy ./tools
-
-# Output:
-# ✓ Deployment complete!
-#
-# Agent template id: pt_26zjNr5yoewkZY9NefgnmH
-#
-# POST https://6mtpjl-3000.csb.app/prompt
-# {
-#   "prompt": "How are you?",
-#   "apiKey": "",
-#   "env": {}
-# }
-```
-
-## Node.js SDK API
-
-### `TogetherAgentSDK`
-
-The main SDK class for interacting with deployed agents.
-
-```typescript
-import { TogetherAgentSDK } from 'together-agent-sdk';
-
-const sdk = new TogetherAgentSDK({
-  apiKey: 'your-together-api-key' // Optional, defaults to TOGETHER_API_KEY env var
+  apiKey: 'your-together-api-key'  // Optional if TOGETHER_API_KEY is set
 });
 ```
 
-**Constructor Options:**
-- `apiKey` (optional): Your Together AI API key. If not provided, uses `TOGETHER_API_KEY` environment variable.
-
-### `sdk.createAgent(templateId)`
+### `createAgent(templateId)`
 
 Creates an agent instance from a deployed template.
 
@@ -277,170 +470,215 @@ Creates an agent instance from a deployed template.
 const agent = await sdk.createAgent('pt_26zjNr5yoewkZY9NefgnmH');
 ```
 
-**Parameters:**
-- `templateId` (string): The template ID returned from `together-agent deploy`
-
-**Returns:** An `Agent` object with the following properties:
-- `sandboxId` (string): The CodeSandbox sandbox ID
-- `url` (string): The agent endpoint URL
-- `prompt(message, options)`: Method to send prompts to the agent
+**Returns:**
+```typescript
+interface Agent {
+  sandboxId: string;   // CodeSandbox ID
+  url: string;         // Agent endpoint URL
+  prompt: (message: string, options?: PromptOptions) => AsyncIterable<AgentMessage>;
+  approve: (approvalId: string) => Promise<void>;
+  reject: (approvalId: string) => Promise<void>;
+}
+```
 
 ### `agent.prompt(message, options)`
 
-Send a prompt to your agent.
+Send a prompt to your agent and receive a stream of messages.
 
 ```typescript
-const result = await agent.prompt('What is the weather?', {
-  env: {
+for await (const message of agent.prompt('What is the weather in Paris?', {
+  secrets: {
     API_KEY: 'your-api-key'
-  },
-  sessionId: 'previous-session-id' // Optional, for conversation continuity
-});
+  }
+})) {
+  switch (message.type) {
+    case 'text':
+      console.log('Response:', message.content);
+      break;
+    case 'custom_tool_call_started':
+      console.log(`Tool ${message.toolName} started`);
+      break;
+    case 'custom_tool_call_completed':
+      console.log(`Tool ${message.toolName} completed:`, message.result);
+      break;
+    case 'error':
+      console.error('Error:', message.error);
+      break;
+  }
+}
 ```
 
 **Parameters:**
-- `message` (string): The prompt to send to the agent
-- `options` (optional object):
-  - `env` (Record<string, string>): Environment variables to pass to your tools
-  - `sessionId` (string): Session ID for continuing a previous conversation
-
-**Returns:** A `PromptResult` object:
 ```typescript
-{
-  success: boolean;
-  response?: string;        // The agent's response
-  sessionId?: string;       // Session ID for follow-up prompts
-  error?: string;           // Error message if success is false
-  timestamp?: string;       // ISO timestamp
+interface PromptOptions {
+  secrets?: Record<string, string>;  // Secrets for tools
 }
 ```
 
-**Example with session continuity:**
+**Returns:**
+An async iterable that yields `AgentMessage` objects. See [Message Types](#message-streaming) for all message types.
 
+**Example - Collecting the final response:**
 ```typescript
-// First prompt
-const result1 = await agent.prompt('What is the weather in Paris?');
-console.log(result1.response);
+let finalResponse = '';
 
-// Follow-up prompt with same session
-const result2 = await agent.prompt('How about tomorrow?', {
-  sessionId: result1.sessionId
-});
-console.log(result2.response);
-```
-
-## Environment Variables
-
-### Required
-
-- `TOGETHER_API_KEY` - Your Together AI API key (get one at [together.ai](https://www.together.ai))
-
-**Note:** The Together AI API key is used for both the AI model and CodeSandbox deployment. You only need one API key.
-
-### Tool-Specific Variables
-
-Environment variables passed via `--env` (CLI) or `options.env` (SDK) are available to your tools. Common examples:
-
-- `BRAVE_SEARCH_API_KEY` - For web search tools using Brave Search API
-- Any custom API keys or configuration your tools need
-
-**CLI Example:**
-
-```bash
-export TOGETHER_API_KEY="your-together-key"
-together-agent run ./tools --env BRAVE_SEARCH_API_KEY="your-brave-key"
-```
-
-**SDK Example:**
-
-```typescript
-const result = await agent.prompt('Search for latest news', {
-  env: {
-    BRAVE_SEARCH_API_KEY: 'your-brave-key'
+for await (const message of agent.prompt('What is 2+2?')) {
+  if (message.type === 'text') {
+    finalResponse += message.content;
   }
-});
+}
+
+console.log('Final response:', finalResponse);
 ```
 
-## Creating Tools
+**Example - Handling approvals:**
+```typescript
+for await (const message of agent.prompt('Send an email')) {
+  switch (message.type) {
+    case 'approval_request':
+      // Handle approval request in your UI
+      const approved = await askUser(message.payload);
 
-Tools are JavaScript/ES6 modules that export a default object with the following fields:
+      if (approved) {
+        await agent.approve(message.approvalId);
+      } else {
+        await agent.reject(message.approvalId);
+      }
+      break;
 
-### Tool Structure
+    case 'error':
+      console.error('Error:', message.error);
+      break;
 
-```javascript
+    case 'text':
+      console.log(message.content);
+      break;
+  }
+}
+```
+
+### `agent.approve(approvalId)`
+
+Approve a pending approval request.
+
+```typescript
+await agent.approve(message.approvalId);
+```
+
+**Parameters:**
+- `approvalId` (string): The approval ID from the `approval_request` message
+
+**Returns:** `Promise<void>`
+
+### `agent.reject(approvalId)`
+
+Reject a pending approval request.
+
+```typescript
+await agent.reject(message.approvalId);
+```
+
+**Parameters:**
+- `approvalId` (string): The approval ID from the `approval_request` message
+
+**Returns:** `Promise<void>`
+
+**Note:** When an approval is rejected, the tool execution will throw an error and the agent will receive a message that the user declined to proceed.
+
+---
+
+### Tool Definition API
+
+### Basic Structure
+
+```typescript
 import { z } from 'zod';
 
 export default {
-  description: 'Your tool description',
-  inputSchema: z.object({
-    param: z.string().describe('Parameter description'),
-  }),
-  outputSchema: z.object({
-    result: z.string().describe('Result description'),
-  }),
-  execute: async (params) => {
-    // Your tool logic
-    return result;
-  },
+  description: string,
+  inputSchema: z.ZodType,
+  outputSchema?: z.ZodType,  // Optional
+  execute: async (params) => any
 }
 ```
 
-### Tool Fields
+### With Context (for secrets/approval)
 
-#### 1. `description` (string)
-
-**IMPORTANT:** The description should be **verbose and keyword-rich**. This description is used by the AI to discover which tools to use, but it is **NOT passed as payload** to the API - so make it as detailed as possible without worrying about token costs.
-
-Include:
-- **Primary function**: What the tool does
-- **Use cases**: When and why to use it
-- **Synonyms & related terms**: Alternative words users might search for
-- **Specific capabilities**: Detailed features and data it can provide
-- **Domain-specific keywords**: Technical terms relevant to the tool's purpose
-
-**Example of a good description:**
-
-```javascript
-description: "Get weather forecast temperature climate atmospheric conditions meteorology for any location city place region area. Check current real-time temperature degrees fahrenheit celsius hot cold warm cool. Find precipitation rain snow drizzle hail showers storms thunderstorms. Check wind speed direction gusts. Get humidity moisture levels atmospheric pressure. See sky conditions clear cloudy overcast sunny foggy. Weather forecast outdoor outside conditions feels-like apparent temperature wind-chill heat-index."
+```typescript
+export default (context: ToolExecutionContext) => ({
+  description: string,
+  inputSchema: z.ZodType,
+  outputSchema?: z.ZodType,
+  execute: async (params, context) => any
+})
 ```
 
-This helps the AI discover the tool when users ask questions like:
-- "What's the temperature in Boston?"
-- "Is it raining in Seattle?"
-- "What's the weather forecast for Tokyo?"
-- "How humid is it in Miami?"
+### `description`
 
-#### 2. `inputSchema` (Zod schema)
+**Use keywords for matching!** The description is a space-separated list of keywords used for tool discovery via regex matching. Include:
+- Concrete, specific terms (not generic words like "data", "information", "get")
+- Domain-specific terminology
+- Synonyms and related terms
+- Common variations
 
-Define the parameters your tool accepts using Zod schemas. Each parameter should have a clear description.
+```typescript
+// ❌ Bad - generic terms that match too broadly
+description: 'get data information from location'
 
-```javascript
+// ✅ Good - concrete, specific keywords
+description: 'weather forecast temperature climate celsius fahrenheit rain snow wind humidity precipitation atmospheric'
+```
+
+Use concrete terms that clearly identify what the tool does. Avoid generic words that could apply to many tools.
+
+### `inputSchema`
+
+Zod schema defining tool parameters.
+
+```typescript
 inputSchema: z.object({
-  location: z.string().describe('The city name or location'),
-  units: z.enum(['fahrenheit', 'celsius']).optional().describe('Temperature units'),
+  location: z.string().describe('City name or coordinates'),
+  units: z.enum(['fahrenheit', 'celsius']).optional(),
+  includeForecast: z.boolean().default(false),
 })
 ```
 
-#### 3. `outputSchema` (Zod schema, optional)
+**Best practices:**
+- Always use `.describe()` on each field
+- Use appropriate Zod types (string, number, boolean, enum, etc.)
+- Mark optional fields with `.optional()` or `.default()`
+- Use enums for constrained values
 
-Define the expected output structure of your tool using Zod schemas. This helps the AI understand what data your tool will return and validates the output.
+### `outputSchema` (optional)
 
-```javascript
+Zod schema defining the expected output structure.
+
+```typescript
 outputSchema: z.object({
-  temperature: z.number().describe('The temperature value'),
-  condition: z.string().describe('Weather condition description'),
-  humidity: z.number().optional().describe('Humidity percentage'),
+  temperature: z.number().describe('Temperature value'),
+  condition: z.string().describe('Weather condition'),
+  humidity: z.number().optional(),
 })
 ```
 
-#### 4. `execute` (async function)
+Helps the AI understand what data your tool returns.
 
-The function that performs the tool's action. Receives validated parameters and returns the result.
+### `execute`
 
-```javascript
-execute: async ({ location, units = 'fahrenheit' }) => {
-  // Your implementation
-  const data = await fetchWeatherData(location);
+Async function that performs the tool's action.
+
+```typescript
+execute: async (params, context?) => {
+  // Access validated input
+  const { location, units } = params;
+
+  // Access secrets (if using context)
+  const apiKey = context?.secrets.WEATHER_API_KEY;
+
+  // Perform action
+  const data = await fetchWeatherData(location, apiKey);
+
+  // Return structured result
   return {
     temperature: data.temp,
     condition: data.condition,
@@ -448,211 +686,337 @@ execute: async ({ location, units = 'fahrenheit' }) => {
 }
 ```
 
-### Accessing Environment Variables
+**Best practices:**
+- Always use `async`
+- Handle errors with clear messages
+- Return structured data (objects, arrays)
+- Log useful information with `console.log()` during debugging
 
-Tools can receive environment variables passed via `--env` by exporting a function instead of an object:
+---
+
+## Best Practices
+
+### Tool Descriptions
+
+✅ **Do:**
+- Use concrete, specific keywords (e.g., "email", "weather", "database")
+- Add domain-specific terminology (e.g., "SMTP", "celsius", "SQL")
+- Include synonyms and variations (e.g., "mail message correspondence")
+- Think about specific user intents
+
+❌ **Don't:**
+- Use generic terms like "data", "information", "get", "set", "find"
+- Write full sentences or natural language
+- Use vague terms that apply to multiple tools
+
+### Error Handling
+
+```typescript
+execute: async ({ email }) => {
+  // Validate inputs
+  if (!email.includes('@')) {
+    throw new Error('Invalid email format');
+  }
+
+  // Check secrets
+  const apiKey = context.secrets.API_KEY;
+  if (!apiKey) {
+    throw new Error('API_KEY environment variable is required');
+  }
+
+  // Handle API errors
+  try {
+    const result = await callAPI(email, apiKey);
+    return result;
+  } catch (error) {
+    throw new Error(`API call failed: ${error.message}`);
+  }
+}
+```
+
+### Parallel Tool Execution
+
+When tools are independent, the agent can execute them in parallel:
 
 ```javascript
+// Agent generates:
+const [weather, news] = await Promise.all([
+  tools.getWeather({ location: "Paris" }),
+  tools.searchNews({ query: "Paris" })
+]);
+```
+
+This is automatic - design tools to be independent when possible.
+
+### Security
+
+- **Never hardcode secrets** - always use `context.secrets`
+- **Request approval** for sensitive actions (email, payments, deletions)
+- **Validate inputs** thoroughly in your execute function
+- **Sanitize outputs** if they'll be displayed to users
+
+---
+
+## Environment Variables
+
+### `TOGETHER_API_KEY` (required)
+
+Your Together AI API key. Get one at [together.ai](https://www.together.ai)
+
+```bash
+export TOGETHER_API_KEY="your-key"
+```
+
+Used for:
+- AI model inference
+- CodeSandbox deployment (Together keys work with CodeSandbox)
+
+### Tool-specific variables
+
+Passed via `--env` (CLI) or `options.secrets` (Node.js):
+
+```bash
+# CLI
+together-agent run ./my-agent \
+  --env BRAVE_API_KEY=abc \
+  --env SENDGRID_KEY=xyz
+
+# Node.js
+await agent.prompt('message', {
+  secrets: {
+    BRAVE_API_KEY: 'abc',
+    SENDGRID_KEY: 'xyz'
+  }
+});
+```
+
+---
+
+## Troubleshooting
+
+### "TOGETHER_API_KEY environment variable is required"
+
+**Solution:** Set your API key:
+```bash
+export TOGETHER_API_KEY="your-key"
+```
+
+Or pass it when creating the client:
+```typescript
+const sdk = new TogetherAgentSDK({ apiKey: 'your-key' });
+```
+
+### "Agent directory not found"
+
+**Solution:** Verify the path exists:
+```bash
+ls ./my-agent  # Should show your .ts files
+```
+
+### Tool not being discovered
+
+**Solution:** Add more specific keywords to the tool's description:
+```typescript
+// Add concrete, domain-specific terms
+description: 'weather forecast temperature climate celsius fahrenheit rain snow sunny cloudy wind humidity barometric'
+```
+
+Avoid generic terms like "data", "information", "get" - use specific terms like "weather", "email", "database".
+
+### "Environment variable is required" error
+
+**Solution:** Make sure you're passing secrets:
+
+**CLI:**
+```bash
+together-agent run ./my-agent --env MY_VAR=value
+```
+
+**Node.js:**
+```typescript
+await agent.prompt('message', {
+  secrets: { MY_VAR: 'value' }
+});
+```
+
+### Deployment fails
+
+**Checklist:**
+- Agent directory contains valid TypeScript files
+- `package.json` and `tsconfig.json` exist
+- `npm run build` succeeds locally
+- `TOGETHER_API_KEY` is set correctly
+
+### TypeScript compilation errors
+
+**Solution:** Make sure your `tsconfig.json` has:
+```json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "outDir": "./dist"
+  }
+}
+```
+
+---
+
+## Examples
+
+### Weather Tool
+
+```typescript
+// my-agent/getWeather.ts
 import { z } from 'zod';
 
-export default (env) => ({
-  description: 'Search the web for information',
+export default (context) => ({
+  description: 'weather forecast temperature climate meteorology fahrenheit celsius precipitation rain snow drizzle hail storm thunderstorm wind humidity barometric pressure sunny cloudy overcast foggy',
+
   inputSchema: z.object({
-    query: z.string().describe('The search query'),
+    location: z.string().describe('City name, region, or coordinates'),
+    units: z.enum(['fahrenheit', 'celsius']).default('fahrenheit'),
   }),
-  execute: async ({ query }) => {
-    const apiKey = env.BRAVE_SEARCH_API_KEY;
+
+  outputSchema: z.object({
+    temperature: z.number(),
+    condition: z.string(),
+    humidity: z.number(),
+    windSpeed: z.number(),
+  }),
+
+  execute: async ({ location, units }) => {
+    const apiKey = context.secrets.WEATHER_API_KEY;
 
     if (!apiKey) {
-      throw new Error('BRAVE_SEARCH_API_KEY is required');
+      throw new Error('WEATHER_API_KEY is required');
     }
 
-    // Use the API key
-    const response = await fetch(`https://api.example.com?key=${apiKey}`);
-    return response.json();
+    const response = await fetch(
+      `https://api.weather.com/v1/current?location=${location}&units=${units}&key=${apiKey}`
+    );
+
+    if (!response.ok) {
+      throw new Error(`Weather API error: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+
+    return {
+      temperature: data.temp,
+      condition: data.weather,
+      humidity: data.humidity,
+      windSpeed: data.wind_speed,
+    };
   },
 });
 ```
 
-### Tool File Naming
+### Email Tool with Approval
 
-- Tool files must end with `.js`
-- The filename (without `.js`) becomes the tool name
-- Example: `getWeather.js` → tool name: `getWeather`
-- Use camelCase for tool names
-
-## Example Tools
-
-### Simple Tool (No Environment Variables)
-
-```javascript
-// tools/calculateDistance.js
+```typescript
+// my-agent/sendEmail.ts
 import { z } from 'zod';
 
-export default {
-  description: 'Calculate distance length measurement between two geographic locations cities places points coordinates. Compute travel distance mileage kilometers miles route path between origin destination. Get straight-line direct distance as-the-crow-flies air distance great-circle distance. Find distance from one city to another location to location point-to-point geographical spacing separation.',
-  inputSchema: z.object({
-    from: z.string().describe('Starting location or city'),
-    to: z.string().describe('Destination location or city'),
-  }),
-  outputSchema: z.object({
-    distance: z.number().describe('The distance value'),
-    unit: z.string().describe('The unit of measurement (e.g., miles, kilometers)'),
-    from: z.string().describe('Starting location'),
-    to: z.string().describe('Destination location'),
-  }),
-  execute: async ({ from, to }) => {
-    // Implementation here
-    return {
-      distance: 1234,
-      unit: 'miles',
-      from,
-      to,
-    };
-  },
-};
-```
+export default (context) => ({
+  description: 'email send mail SMTP message recipient address inbox outbox compose deliver notification alert reminder newsletter sendgrid mailgun postmark',
 
-### Tool with Environment Variables
-
-```javascript
-// tools/sendEmail.js
-import { z } from 'zod';
-
-export default (env) => ({
-  description: 'Send electronic mail email message letter correspondence communication to recipient address. Email messaging write compose send deliver transmit dispatch email messages notifications alerts reminders updates newsletters. Contact reach-out communicate via email electronic mail internet mail SMTP messaging service.',
   inputSchema: z.object({
     to: z.string().describe('Recipient email address'),
     subject: z.string().describe('Email subject line'),
     body: z.string().describe('Email body content'),
   }),
+
   outputSchema: z.object({
-    success: z.boolean().describe('Whether the email was sent successfully'),
-    messageId: z.string().describe('The unique message identifier'),
+    success: z.boolean(),
+    messageId: z.string(),
   }),
+
   execute: async ({ to, subject, body }) => {
-    const apiKey = env.SENDGRID_API_KEY;
+    // Request approval before sending
+    await context.requestApproval({
+      action: 'send_email',
+      to,
+      subject,
+      preview: body.substring(0, 100),
+      warning: 'This will send a real email to the recipient',
+    }, 30000);  // 30 second timeout
+
+    const apiKey = context.secrets.SENDGRID_API_KEY;
 
     if (!apiKey) {
-      throw new Error('SENDGRID_API_KEY environment variable is required');
+      throw new Error('SENDGRID_API_KEY is required');
     }
 
-    // Send email using API key
-    // ...
+    // Send email via SendGrid
+    const response = await fetch('https://api.sendgrid.com/v3/mail/send', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        personalizations: [{ to: [{ email: to }] }],
+        from: { email: 'noreply@example.com' },
+        subject,
+        content: [{ type: 'text/plain', value: body }],
+      }),
+    });
 
-    return { success: true, messageId: '123' };
+    if (!response.ok) {
+      throw new Error(`SendGrid error: ${response.statusText}`);
+    }
+
+    return {
+      success: true,
+      messageId: response.headers.get('X-Message-Id') || 'unknown',
+    };
   },
 });
 ```
 
-## How It Works
+### Database Query Tool
 
-1. **Tool Discovery**: The agent uses AI to discover relevant tools based on user prompts by matching against tool descriptions
-2. **Tool Execution**: When the AI determines which tools to use, it generates code to call them with appropriate parameters
-3. **Conversational Context**: The agent maintains conversation history within a session, allowing for follow-up questions
-4. **Safety**: Tool execution code is validated to prevent dangerous operations
-
-## Interactive Usage
-
-Once you run `together-agent run ./tools`, you'll enter an interactive prompt where you can:
-
-- Ask questions that use your tools
-- Have multi-turn conversations (context is preserved)
-- Type `exit` to quit
-- Press Ctrl+C to stop the server
-
-Example session:
-
-```
-Enter your prompt: What's the weather in San Francisco?
-
-Response:
-──────────────────────────────────────────────────
-The current weather in San Francisco is 62°F and partly cloudy.
-──────────────────────────────────────────────────
-
-Enter your prompt (or 'exit' to quit): How about New York?
-
-Response:
-──────────────────────────────────────────────────
-The weather in New York is currently 45°F with clear skies.
-──────────────────────────────────────────────────
-
-Enter your prompt (or 'exit' to quit): exit
-```
-
-## Best Practices
-
-### Tool Descriptions
-- Be extremely verbose - the AI uses this to discover tools
-- Include synonyms and related terms
-- Think about different ways users might ask for the same thing
-- Don't worry about length - descriptions aren't sent as API payload
-
-### Input Schemas
-- Use descriptive names for parameters
-- Always include `.describe()` on each field
-- Use Zod's validation features (enums, optional, etc.)
-
-### Execute Functions
-- Always use async/await for consistency
-- Handle errors gracefully with clear error messages
-- Return structured data that's easy to interpret
-- Validate environment variables at the start
-
-### Error Handling
-```javascript
-execute: async (params) => {
-  try {
-    // Your logic
-  } catch (error) {
-    throw new Error(`Failed to fetch data: ${error.message}`);
-  }
-}
-```
-
-## Troubleshooting
-
-### "TOGETHER_API_KEY environment variable is required"
-Make sure you've set your Together AI API key:
-```bash
-export TOGETHER_API_KEY="your-key"
-```
-
-Or pass it directly when using the SDK:
 ```typescript
-const sdk = new TogetherAgentSDK({ apiKey: 'your-key' });
-```
+// my-agent/queryDatabase.ts
+import { z } from 'zod';
 
-### "Tools directory not found"
-Verify the path to your tools directory is correct and that it exists:
-```bash
-ls ./tools  # Should show your .js tool files
-```
+export default (context) => ({
+  description: 'database query SQL SELECT WHERE table column row record postgres mysql sqlite mongodb collection document filter JOIN aggregate',
 
-### Tool not being discovered
-Enhance your tool's description with more keywords and synonyms related to what the tool does. Remember, descriptions should be verbose and keyword-rich.
+  inputSchema: z.object({
+    table: z.string().describe('Table or collection name'),
+    filters: z.record(z.any()).optional().describe('Filter conditions'),
+    limit: z.number().default(10),
+  }),
 
-### Environment variable not available in tool
-**CLI:** Make sure you're passing it via `--env`:
-```bash
-together-agent run ./tools --env MY_VAR=value
-```
+  execute: async ({ table, filters, limit }) => {
+    const dbUrl = context.secrets.DATABASE_URL;
 
-**SDK:** Pass it in the prompt options:
-```typescript
-await agent.prompt('Your prompt', {
-  env: { MY_VAR: 'value' }
+    if (!dbUrl) {
+      throw new Error('DATABASE_URL is required');
+    }
+
+    // Build and execute query (simplified example)
+    console.log(`Querying table: ${table}`);
+    console.log(`Filters:`, filters);
+
+    // Simulate query execution
+    const results = [
+      { id: 1, name: 'Example', created: new Date() }
+    ];
+
+    return {
+      table,
+      count: results.length,
+      results: results.slice(0, limit),
+    };
+  },
 });
 ```
 
-### Deployment fails
-- Ensure your tools directory contains valid JavaScript files
-- Make sure all dependencies in `tools/package.json` are correct
-- Verify your TOGETHER_API_KEY is valid
-
-### Agent creation fails or times out
-CodeSandbox may take a moment to spin up the sandbox. The `createAgent` call waits for the sandbox to be created. If it times out, the sandbox may need more time to start, or there may be an issue with the deployment.
+---
 
 ## License
 

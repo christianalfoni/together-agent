@@ -1,8 +1,4 @@
-- Use typescript tools with schema validation
 - update docs to reflect building an agent, not just tools
 - what about many tools in same domain... would that not overload? Maybe some kind of weight on hits? Max 5 tools?
-- agent instance IS the session, do not need sessionId
 - Drop using CSB SDK in the Agent SDK
-- Show actual tool calls, not just native tools
-- Can we internally protect execution? Can just have a message?
 - Store messages in file
