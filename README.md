@@ -81,9 +81,12 @@ export default (context) => ({
 })
 ```
 
-Pass secrets via CLI:
+Pass secrets via CLI using a `.env` file:
 ```bash
-together-agent run ./my-agent --env SENDGRID_API_KEY=xyz
+# Create a .env file in your current directory:
+# SENDGRID_API_KEY=xyz
+
+together-agent run ./my-agent
 ```
 
 Or in your application:
@@ -244,11 +247,20 @@ export default (context) => ({
 ### Passing Secrets
 
 **CLI (local testing):**
+
+Create a `.env` file in your current directory:
 ```bash
-together-agent run ./my-agent \
-  --env BRAVE_API_KEY=abc123 \
-  --env SENDGRID_KEY=xyz789
+# .env
+BRAVE_API_KEY=abc123
+SENDGRID_KEY=xyz789
 ```
+
+Then run your agent:
+```bash
+together-agent run ./my-agent
+```
+
+The CLI will automatically load all variables from the `.env` file and pass them as secrets to your tools.
 
 **In your application:**
 ```typescript
@@ -373,7 +385,10 @@ together-agent run ./my-agent [options]
 
 **Options:**
 - `-p, --port <port>` - Port to run server on (default: 3000)
-- `-e, --env <KEY=VALUE>` - Environment variables (can be repeated)
+
+**Environment Variables:**
+
+The `run` command automatically loads environment variables from a `.env` file in your current directory and passes them as secrets to your tools.
 
 **Examples:**
 ```bash
@@ -383,10 +398,11 @@ together-agent run ./my-agent
 # Custom port
 together-agent run ./my-agent -p 8080
 
-# With secrets
-together-agent run ./my-agent \
-  --env BRAVE_API_KEY=abc123 \
-  --env SENDGRID_KEY=xyz789
+# With secrets - create a .env file first:
+# .env
+# BRAVE_API_KEY=abc123
+# SENDGRID_KEY=xyz789
+together-agent run ./my-agent
 ```
 
 **Interactive session:**
@@ -773,13 +789,15 @@ Used for:
 
 ### Tool-specific variables
 
-Passed via `--env` (CLI) or `options.secrets` (Node.js):
+Passed via `.env` file (CLI) or `options.secrets` (Node.js):
 
 ```bash
-# CLI
-together-agent run ./my-agent \
-  --env BRAVE_API_KEY=abc \
-  --env SENDGRID_KEY=xyz
+# CLI - Create a .env file:
+# .env
+# BRAVE_API_KEY=abc
+# SENDGRID_KEY=xyz
+
+together-agent run ./my-agent
 
 # Node.js
 await agent.prompt('message', {
@@ -828,8 +846,15 @@ Avoid generic terms like "data", "information", "get" - use specific terms like 
 **Solution:** Make sure you're passing secrets:
 
 **CLI:**
+Create a `.env` file in your current directory:
 ```bash
-together-agent run ./my-agent --env MY_VAR=value
+# .env
+MY_VAR=value
+```
+
+Then run your agent:
+```bash
+together-agent run ./my-agent
 ```
 
 **Node.js:**

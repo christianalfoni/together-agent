@@ -7,6 +7,7 @@ import * as path from "path";
 import * as os from "os";
 import { execSync, spawn } from "child_process";
 import * as readline from "readline";
+import { config as dotenvConfig } from "dotenv";
 
 const program = new Command();
 
@@ -117,23 +118,24 @@ program
   .description("Run the agent server and send a prompt")
   .argument("<tools-path>", "path to the tools directory")
   .option("-p, --port <port>", "port to run the agent server on", "3000")
-  .option("-e, --env <KEY=VALUE>", "environment variables to pass to tools (can be specified multiple times)", (value, previous: string[] = []) => {
-    return [...previous, value];
-  }, [])
-  .action(async (toolsPath: string, options: { port: string; env: string[] }) => {
+  .action(async (toolsPath: string, options: { port: string }) => {
     const port = options.port;
-    const apiKey = process.env.TOGETHER_API_KEY;
 
-    // Parse env variables from KEY=VALUE format into a record
+    // Load environment variables from .env file
+    const envPath = path.resolve(process.cwd(), '.env');
     const toolEnv: Record<string, string> = {};
-    for (const envVar of options.env) {
-      const [key, ...valueParts] = envVar.split('=');
-      if (!key || valueParts.length === 0) {
-        console.error(`Error: Invalid env format "${envVar}". Expected KEY=VALUE`);
-        process.exit(1);
+
+    if (fs.existsSync(envPath)) {
+      const result = dotenvConfig({ path: envPath });
+      if (result.parsed) {
+        Object.assign(toolEnv, result.parsed);
+        console.log(`Loaded ${Object.keys(result.parsed).length} environment variable(s) from ${envPath}`);
       }
-      toolEnv[key] = valueParts.join('='); // Handle values that contain '='
+    } else {
+      console.log('No .env file found, proceeding without environment variables');
     }
+
+    const apiKey = process.env.TOGETHER_API_KEY;
 
     if (!apiKey) {
       console.error("Error: TOGETHER_API_KEY environment variable is required");
