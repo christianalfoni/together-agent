@@ -1,0 +1,13 @@
+{
+  "name": "gmail-agent-tools",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "googleapis": "^170.0.0",
+    "zod": "^4.2.1"
+  }
+}

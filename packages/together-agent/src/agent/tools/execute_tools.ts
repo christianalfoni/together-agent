@@ -1,13 +1,17 @@
 import { validateCode } from "./validate_code";
 import { createConsoleInterceptor } from "./console_interceptor";
+import { ensureToolCallsAreAwaited } from "./transform_code";
 
 // Default execution timeout in milliseconds (30 seconds)
 const EXECUTION_TIMEOUT_MS = 30000;
 
 export async function executeTools(code: string, tools: Record<string, any>) {
   try {
+    // Transform code to ensure all tool calls are awaited
+    const transformedCode = ensureToolCallsAreAwaited(code);
+
     // Validate the code before execution
-    const validation = validateCode(code, ["tools", "console"]);
+    const validation = validateCode(transformedCode, ["tools", "console"]);
     if (!validation.isValid) {
       return {
         logs: [],
@@ -40,7 +44,7 @@ export async function executeTools(code: string, tools: Record<string, any>) {
       "tools",
       "console",
       `return (async () => {
-${code}
+${transformedCode}
       })();`
     );
 

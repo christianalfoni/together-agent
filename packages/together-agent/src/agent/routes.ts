@@ -190,6 +190,8 @@ router.post("/approval", (req, res) => {
   try {
     const response: ApprovalResponse = req.body;
 
+    console.log("📨 SERVER: Received approval response", response);
+
     if (!response.approvalId) {
       return res.status(400).json({ error: "approvalId is required" });
     }
@@ -201,11 +203,13 @@ router.post("/approval", (req, res) => {
     const resolved = resolveApproval(response);
 
     if (!resolved) {
+      console.log("❌ SERVER: Approval request not found or already resolved");
       return res.status(404).json({
         error: "Approval request not found or already resolved",
       });
     }
 
+    console.log("✅ SERVER: Approval resolved successfully");
     res.json({ success: true });
   } catch (error) {
     console.error("Error in approval endpoint:", error);
@@ -266,6 +270,8 @@ router.post("/", async (req, res) => {
     const approvalId = generateApprovalId();
     const timeout = timeoutMs || approvalTimeout;
 
+    console.log("🚨 SERVER: Creating approval request", approvalId, payload);
+
     // Send approval request message immediately (bypass queue)
     sendMessageNow({
       type: "approval_request",
@@ -273,8 +279,10 @@ router.post("/", async (req, res) => {
       payload,
     });
 
+    console.log("🚨 SERVER: Waiting for approval response...");
     // Wait for approval response (throws if rejected or timed out)
     await createApprovalRequest(approvalId, timeout);
+    console.log("✅ SERVER: Approval received, continuing execution");
   };
 
   // Create context object for tools
@@ -284,6 +292,47 @@ router.post("/", async (req, res) => {
   };
 
   try {
+    // Add system message if this is the first message in the conversation
+    if (messages.length === 0) {
+      const systemMessage: CoreMessage = {
+        role: "system",
+        content: `You are a helpful AI assistant with access to various tools to help users accomplish their tasks.
+
+CRITICAL TOOL USAGE INSTRUCTIONS:
+- You have THREE native tools available: discover_tools, execute_tools, and execute_code
+- discover_tools: Use this DIRECTLY to find available custom tools based on a query
+- execute_tools: Use this to call custom tools you've discovered (like readEmails, sendEmail, etc.)
+  - ALWAYS use 'await' when calling tools (e.g., 'await tools.sendEmail(...)')
+  - Tools are asynchronous and need await to complete properly
+  - This is especially important for tools that require user approval
+- execute_code: Use this for general JavaScript computation
+
+IMPORTANT: NEVER try to call discover_tools from within execute_tools or execute_code. These are separate tools you call directly.
+
+CORRECT TOOL USAGE:
+✅ Call discover_tools directly when you need to find tools
+✅ Then call execute_tools with: await tools.toolName(...)
+❌ NEVER write code like: await tools.discover_tools() inside execute_tools
+❌ NEVER try to discover tools from within tool execution code
+❌ NEVER forget 'await' when calling tools
+
+USER COMMUNICATION:
+- NEVER mention or expose the internal tool discovery mechanism to users
+- NEVER say things like "Let me discover a tool" or "I'll search for available tools"
+- Instead, be natural and direct about what you're going to do
+
+EXAMPLES:
+❌ "Let me see if I can discover a tool to help with that"
+✅ "Let me help you with that"
+
+❌ "Great! I found a readEmails tool. Let me use it now."
+✅ "Let me check your emails for you"
+
+Be confident, natural, and focus on the user's intent rather than the technical process.`,
+      };
+      messages.push(systemMessage);
+    }
+
     // Add user message to conversation history
     const userMessage: CoreMessage = {
       role: "user",

@@ -579,61 +579,65 @@ program
       );
       console.log("Created .codesandbox/tasks.json");
 
-      // Run the CodeSandbox build command
+      // Get Together API key for authentication
+      const apiKey = process.env.TOGETHER_API_KEY;
+      if (!apiKey) {
+        console.error("\nError: TOGETHER_API_KEY environment variable is required");
+        console.error("Set it in your .env file or export it:");
+        console.error("  export TOGETHER_API_KEY=your_api_key");
+        fs.rmSync(tempDir, { recursive: true, force: true });
+        process.exit(1);
+      }
+
+      // Set CSB_API_KEY to Together API key for authentication
+      process.env.CSB_API_KEY = apiKey;
+
       console.log("\nDeploying to CodeSandbox...\n");
 
-      let outputBuffer = "";
-      let errorBuffer = "";
+      // Find the csb CLI binary
+      const csbBinaryPath = path.join(
+        __dirname,
+        "../node_modules/@codesandbox/sdk/dist/bin/codesandbox.mjs"
+      );
 
+      // Run csb build command
       const buildProcess = spawn(
-        "npx",
-        ["@codesandbox/sdk", "build", tempDir, "--ports", "3000", "--ci"],
+        "node",
+        [
+          csbBinaryPath,
+          "build",
+          tempDir,
+          "--ports",
+          "3000",
+          "--ci",
+          "--name",
+          "Together Agent"
+        ],
         {
-          stdio: ["ignore", "pipe", "pipe"],
+          env: { ...process.env, CSB_API_KEY: apiKey },
+          stdio: "inherit",
         }
       );
 
-      buildProcess.stdout?.on("data", (data) => {
-        outputBuffer += data.toString();
-      });
-
-      buildProcess.stderr?.on("data", (data) => {
-        errorBuffer += data.toString();
-      });
-
       buildProcess.on("close", (code) => {
         // Clean up temp directory
-        console.log("Cleaning up...");
+        console.log("\nCleaning up...");
         fs.rmSync(tempDir, { recursive: true, force: true });
 
         if (code !== 0 && code !== null) {
           console.error("\nDeployment failed!");
-          console.error(errorBuffer || outputBuffer);
           process.exit(code);
         }
 
-        // Parse the output
-        const tagMatch = outputBuffer.match(/Template created with tag: ([\w_]+)/);
-        const verifyMatch = outputBuffer.match(/Verify Sandbox at: https:\/\/codesandbox\.io\/s\/([\w]+)/);
-
-        if (tagMatch && verifyMatch) {
-          const templateId = tagMatch[1];
-          const sandboxId = verifyMatch[1];
-          const agentUrl = `https://${sandboxId}-3000.csb.app/prompt`;
-
-          console.log("\n✓ Deployment complete!");
-          console.log(`\nAgent template id: ${templateId}`);
-          console.log(`\nPOST ${agentUrl}`);
-          console.log(`{
-  "prompt": "How are you?",
-  "apiKey": "",
-  "env": {}
-}`);
-        } else {
-          console.log("\n✓ Deployment complete!");
-          console.log("\nNote: Could not parse deployment details from output.");
-          console.log("Raw output:", outputBuffer);
-        }
+        console.log("\n" + "=".repeat(70));
+        console.log("✓ Deployment complete!");
+        console.log("=".repeat(70));
+        console.log("\nThe template ID should be shown above.");
+        console.log("\nAdd it to your .env file:");
+        console.log("  AGENT_TEMPLATE_ID=<template_id>");
+        console.log("\nYour agent will be available at:");
+        console.log("  https://<sandbox_id>-3000.csb.app/prompt");
+        console.log("=".repeat(70));
 
         process.exit(0);
       });
