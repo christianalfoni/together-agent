@@ -57,8 +57,10 @@ interface Agent {
   prompt: (message: string, options?: PromptOptions) => Promise<Response>;
   approve: (approvalId: string) => Promise<void>;
   reject: (approvalId: string) => Promise<void>;
+  downloadFile: (filePath: string) => Promise<Response>;
   sandboxId: string;
   url: string;
+  baseUrl: string;
 }
 
 export class TogetherAgentSDK {
@@ -97,12 +99,14 @@ export class TogetherAgentSDK {
       });
 
       // Get the authenticated URL using the host token
-      const url = sdk.hosts.getUrl(hostToken, 3000) + "/prompt";
+      const baseUrl = sdk.hosts.getUrl(hostToken, 3000);
+      const url = baseUrl + "/prompt";
 
       // Create the agent object with prompt method
       const agent: Agent = {
         sandboxId,
         url,
+        baseUrl,
         prompt: async (message: string, options: PromptOptions = {}) => {
           const payload = {
             prompt: message,
@@ -169,6 +173,20 @@ export class TogetherAgentSDK {
               `Rejection request failed with status ${response.status}: ${text}`
             );
           }
+        },
+        downloadFile: async (filePath: string) => {
+          const downloadUrl = `${baseUrl}/files/${filePath}`;
+
+          const response = await fetch(downloadUrl);
+
+          if (!response.ok) {
+            const text = await response.text();
+            throw new Error(
+              `Failed to download file with status ${response.status}: ${text}`
+            );
+          }
+
+          return response;
         },
       };
 

@@ -492,8 +492,6 @@ program
   .description("Deploy the agent to CodeSandbox")
   .argument("<tools-path>", "path to the tools directory")
   .action((toolsPath: string) => {
-    console.log("Preparing deployment...");
-
     // Resolve the tools path to absolute
     const absoluteToolsPath = path.resolve(toolsPath);
 
@@ -516,40 +514,57 @@ program
       process.exit(1);
     }
 
+    // Helper function to show spinner
+    const spinner = (message: string) => {
+      const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+      let i = 0;
+      process.stdout.write(message);
+      const interval = setInterval(() => {
+        process.stdout.write(`\r${frames[i]} ${message}`);
+        i = (i + 1) % frames.length;
+      }, 80);
+      return {
+        stop: (success: boolean = true, completionMessage?: string) => {
+          clearInterval(interval);
+          const finalMessage = completionMessage || message;
+          process.stdout.write(`\r${success ? '✓' : '✗'} ${finalMessage}\n`);
+        }
+      };
+    };
+
     // Compile TypeScript tools
-    console.log("Compiling TypeScript tools...");
+    const buildSpinner = spinner("Building agent...");
     try {
       execSync("npm run build", {
         cwd: absoluteToolsPath,
-        stdio: "inherit",
+        stdio: "pipe",
       });
     } catch (error) {
+      buildSpinner.stop(false);
       console.error("Failed to compile TypeScript tools");
       process.exit(1);
     }
 
     const compiledToolsPath = path.join(absoluteToolsPath, "dist");
     if (!fs.existsSync(compiledToolsPath)) {
+      buildSpinner.stop(false);
       console.error(`Error: Compilation succeeded but dist folder not found at ${compiledToolsPath}`);
       process.exit(1);
     }
 
-    console.log("✓ Tools compiled successfully");
+    buildSpinner.stop(true, "Agent built successfully");
 
     // Create a temp folder
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "together-agent-"));
-    console.log(`Created temp directory: ${tempDir}`);
 
     try {
       // Copy the agent folder from dist first
       const agentSourcePath = path.join(__dirname, "agent");
       const tempAgentPath = path.join(tempDir, "agent");
-      console.log("Copying agent folder...");
       copyRecursiveSync(agentSourcePath, tempAgentPath);
 
       // Copy the compiled tools inside the agent folder
       const tempToolsPath = path.join(tempAgentPath, "tools");
-      console.log("Copying compiled tools...");
       copyRecursiveSync(compiledToolsPath, tempToolsPath);
 
       // Copy package.json without devDependencies and scripts
@@ -586,7 +601,6 @@ program
         path.join(codesandboxDir, "tasks.json"),
         JSON.stringify(tasksJson, null, 2)
       );
-      console.log("Created .codesandbox/tasks.json");
 
       // Get Together API key for authentication
       const apiKey = process.env.TOGETHER_API_KEY;
@@ -601,13 +615,16 @@ program
       // Set CSB_API_KEY to Together API key for authentication
       process.env.CSB_API_KEY = apiKey;
 
-      console.log("\nDeploying to CodeSandbox...\n");
+      const deploySpinner = spinner("Deploying agent...");
 
       // Find the csb CLI binary
       const csbBinaryPath = path.join(
         __dirname,
         "../node_modules/@codesandbox/sdk/dist/bin/codesandbox.mjs"
       );
+
+      // Capture output to extract template ID
+      let outputBuffer = "";
 
       // Run csb build command
       const buildProcess = spawn(
@@ -624,29 +641,41 @@ program
         ],
         {
           env: { ...process.env, CSB_API_KEY: apiKey },
-          stdio: "inherit",
+          stdio: "pipe",
         }
       );
 
+      // Capture stdout
+      buildProcess.stdout?.on("data", (data) => {
+        outputBuffer += data.toString();
+      });
+
+      // Capture stderr
+      buildProcess.stderr?.on("data", (data) => {
+        outputBuffer += data.toString();
+      });
+
       buildProcess.on("close", (code) => {
+        deploySpinner.stop(code === 0, "Agent deployed successfully");
+
         // Clean up temp directory
-        console.log("\nCleaning up...");
         fs.rmSync(tempDir, { recursive: true, force: true });
 
         if (code !== 0 && code !== null) {
           console.error("\nDeployment failed!");
+          console.error(outputBuffer);
           process.exit(code);
         }
 
-        console.log("\n" + "=".repeat(70));
-        console.log("✓ Deployment complete!");
-        console.log("=".repeat(70));
-        console.log("\nThe template ID should be shown above.");
-        console.log("\nAdd it to your .env file:");
-        console.log("  AGENT_TEMPLATE_ID=<template_id>");
-        console.log("\nYour agent will be available at:");
-        console.log("  https://<sandbox_id>-3000.csb.app/prompt");
-        console.log("=".repeat(70));
+        // Extract template ID using regex
+        const templateIdMatch = outputBuffer.match(/Template created with tag: (pt_\w+)/);
+        const templateId = templateIdMatch ? templateIdMatch[1] : null;
+
+        if (templateId) {
+          console.log(`\nAgent ID: ${templateId}`);
+        } else {
+          console.log("\nCould not extract agent ID from deployment output.");
+        }
 
         process.exit(0);
       });
@@ -654,6 +683,7 @@ program
       // Handle Ctrl+C gracefully
       process.on("SIGINT", () => {
         console.log("\n\nShutting down...");
+        deploySpinner.stop(false);
         buildProcess.kill();
         fs.rmSync(tempDir, { recursive: true, force: true });
         process.exit(0);

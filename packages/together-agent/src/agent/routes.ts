@@ -12,6 +12,7 @@ import {
   resolveApproval,
 } from "./approval";
 import { CustomToolDefinition } from "../index";
+import { workspacePath } from "./index";
 
 export const router = Router();
 
@@ -311,6 +312,86 @@ router.post("/approval", (req, res) => {
   }
 });
 
+router.get("/files/*", (req, res) => {
+  try {
+    // Extract the file path from the URL (everything after /files/)
+    const requestedPath = req.params[0];
+
+    if (!requestedPath) {
+      return res.status(400).json({ error: "File path is required" });
+    }
+
+    // Build the full file path
+    const filePath = path.join(workspacePath, requestedPath);
+
+    // Security: Prevent path traversal attacks
+    const normalizedPath = path.normalize(filePath);
+    if (!normalizedPath.startsWith(workspacePath)) {
+      console.log("🚫 SERVER: Path traversal attempt blocked:", requestedPath);
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    // Check if file exists
+    if (!fs.existsSync(normalizedPath)) {
+      return res.status(404).json({ error: "File not found" });
+    }
+
+    // Check if it's a file (not a directory)
+    const stat = fs.statSync(normalizedPath);
+    if (!stat.isFile()) {
+      return res.status(400).json({ error: "Path is not a file" });
+    }
+
+    // Determine MIME type based on file extension
+    const ext = path.extname(normalizedPath).toLowerCase();
+    const mimeTypes: Record<string, string> = {
+      ".pdf": "application/pdf",
+      ".png": "image/png",
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg",
+      ".gif": "image/gif",
+      ".svg": "image/svg+xml",
+      ".json": "application/json",
+      ".txt": "text/plain",
+      ".csv": "text/csv",
+      ".html": "text/html",
+      ".css": "text/css",
+      ".js": "application/javascript",
+      ".xml": "application/xml",
+      ".zip": "application/zip",
+    };
+    const mimeType = mimeTypes[ext] || "application/octet-stream";
+
+    // Set response headers
+    res.setHeader("Content-Type", mimeType);
+    res.setHeader("Content-Length", stat.size);
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${path.basename(normalizedPath)}"`
+    );
+
+    // Stream the file
+    const fileStream = fs.createReadStream(normalizedPath);
+    fileStream.pipe(res);
+
+    fileStream.on("error", (error) => {
+      console.error("Error streaming file:", error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: "Error reading file" });
+      }
+    });
+
+    console.log("📥 SERVER: File download requested:", requestedPath);
+  } catch (error) {
+    console.error("Error in files endpoint:", error);
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: "Internal server error",
+      });
+    }
+  }
+});
+
 router.post("/", async (req, res) => {
   const { prompt, apiKey, secrets = {}, approvalTimeout = 30000 } = req.body;
 
@@ -381,6 +462,7 @@ router.post("/", async (req, res) => {
   const context: ToolExecutionContext = {
     secrets: secrets,
     requestApproval,
+    workspacePath,
   };
 
   try {

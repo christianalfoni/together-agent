@@ -93,4 +93,5 @@ export interface PendingApproval {
 export interface ToolExecutionContext {
   secrets: Record<string, string>;
   requestApproval: (payload: any, timeoutMs?: number) => Promise<void>;
+  workspacePath: string;
 }

@@ -638,8 +638,15 @@ Every tool receives a `context` object with:
 interface ToolExecutionContext {
   secrets: Record<string, string>;        // Environment variables
   requestApproval: (payload, timeout) => Promise<void>;  // User approval
+  workspacePath: string;                  // Absolute path to workspace directory
 }
 ```
+
+The `workspacePath` provides a dedicated directory where your tools can read and write files. This workspace is:
+- Created automatically when the agent starts in the current working directory
+- Persistent across tool executions within the same session
+- Isolated per agent instance (each deployed agent has its own workspace)
+- Available at `./workspace` relative to where the agent runs
 
 ### Accessing Secrets
 
@@ -918,10 +925,12 @@ const agent = await sdk.createAgent('pt_26zjNr5yoewkZY9NefgnmH');
 ```typescript
 interface Agent {
   sandboxId: string;   // CodeSandbox ID
-  url: string;         // Agent endpoint URL
+  url: string;         // Agent endpoint URL (prompt endpoint)
+  baseUrl: string;     // Base URL with authentication token
   prompt: (message: string, options?: PromptOptions) => AsyncIterable<AgentMessage>;
   approve: (approvalId: string) => Promise<void>;
   reject: (approvalId: string) => Promise<void>;
+  downloadFile: (filePath: string) => Promise<Response>;
 }
 ```
 
@@ -1029,6 +1038,109 @@ await agent.reject(message.approvalId);
 
 **Note:** When an approval is rejected, the tool execution will throw an error and the agent will receive a message that the user declined to proceed.
 
+### `agent.downloadFile(filePath)`
+
+Download a file from the agent's workspace. Tools can create files (PDFs, images, CSVs, etc.) in the workspace, and you can download them using this method.
+
+```typescript
+const response = await agent.downloadFile('report.pdf');
+const buffer = await response.arrayBuffer();
+fs.writeFileSync('./local-report.pdf', Buffer.from(buffer));
+```
+
+**Parameters:**
+- `filePath` (string): Path to the file within the workspace directory. Supports subdirectories (e.g., `exports/report.pdf`)
+
+**Returns:** `Promise<Response>` - A standard Fetch API Response object containing the file data
+
+**Security:**
+- Files can only be downloaded from the workspace directory
+- Path traversal attempts (e.g., `../../etc/passwd`) are blocked
+- Downloads are authenticated using the agent's host token
+
+**Example - Stream to HTTP response:**
+```typescript
+// Next.js API route or Express endpoint
+app.get('/api/download/:filename', async (req, res) => {
+  const fileResponse = await agent.downloadFile(req.params.filename);
+
+  // Forward headers (Content-Type, Content-Disposition, etc.)
+  fileResponse.headers.forEach((value, key) => {
+    res.setHeader(key, value);
+  });
+
+  // Stream file to client
+  const reader = fileResponse.body.getReader();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    res.write(value);
+  }
+  res.end();
+});
+```
+
+**Example - Save to disk (Node.js):**
+```typescript
+const response = await agent.downloadFile('exports/data.csv');
+const buffer = await response.arrayBuffer();
+await fs.promises.writeFile('./downloaded-data.csv', Buffer.from(buffer));
+```
+
+**Example - Get file metadata:**
+```typescript
+const response = await agent.downloadFile('report.pdf');
+console.log('Content-Type:', response.headers.get('Content-Type'));
+console.log('File size:', response.headers.get('Content-Length'));
+```
+
+**Example tool that creates downloadable files:**
+```typescript
+// my-agent/generatePDF.ts
+import { z } from 'zod';
+import { tool } from 'together-agent';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+import PDFDocument from 'pdfkit';
+
+export default tool({
+  discoveryTerms: ['pdf', 'report', 'document', 'generate', 'create'],
+  inputSchema: z.object({
+    title: z.string().describe('Report title'),
+    content: z.string().describe('Report content'),
+  }),
+  execute: async (input, context) => {
+    // Create PDF in workspace
+    const filename = `report-${Date.now()}.pdf`;
+    const filePath = path.join(context.workspacePath, filename);
+
+    // Generate PDF (simplified example)
+    const doc = new PDFDocument();
+    doc.pipe(fs.createWriteStream(filePath));
+    doc.fontSize(24).text(input.title);
+    doc.fontSize(12).text(input.content);
+    doc.end();
+
+    return {
+      success: true,
+      filename: filename,
+      message: `PDF generated: ${filename}`
+    };
+  },
+});
+```
+
+Then download it:
+```typescript
+// User: "Generate a sales report"
+// Agent uses generatePDF tool, which returns: { filename: "report-1234567890.pdf" }
+
+// Download the generated file
+const response = await agent.downloadFile('report-1234567890.pdf');
+const buffer = await response.arrayBuffer();
+await fs.promises.writeFile('./sales-report.pdf', Buffer.from(buffer));
+```
+
 ---
 
 ### Tool Definition API
@@ -1129,7 +1241,7 @@ export default tool({
 Async function that performs the tool's action. Receives two parameters:
 
 1. **`input`** - The validated input parameters (typed based on your schema)
-2. **`context`** - The `ToolExecutionContext` with `secrets` and `requestApproval`
+2. **`context`** - The `ToolExecutionContext` with `secrets`, `requestApproval`, and `workspacePath`
 ```typescript
 execute: async (input, context) => {
   // Access validated input (fully typed)
@@ -1137,6 +1249,9 @@ execute: async (input, context) => {
 
   // Access secrets from context
   const apiKey = context.secrets.WEATHER_API_KEY;
+
+  // Access workspace path for file operations
+  const workspacePath = context.workspacePath;
 
   // Perform action
   const data = await fetchWeatherData(location, apiKey);
@@ -1475,6 +1590,76 @@ export default tool({
       table: input.table,
       count: results.length,
       results: results.slice(0, input.limit),
+    };
+  },
+});
+```
+
+### File Operations Tool
+
+```typescript
+// my-agent/saveFile.ts
+import { z } from 'zod';
+import { tool } from 'together-agent';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+
+export default tool({
+  discoveryTerms: ['file', 'save', 'write', 'store', 'disk', 'filesystem', 'document', 'text', 'data', 'create', 'persist'],
+  inputSchema: z.object({
+    filename: z.string().describe('Name of the file to save'),
+    content: z.string().describe('Content to write to the file'),
+  }),
+
+  execute: async (input, context) => {
+    // Use the workspace path from context
+    const filePath = path.join(context.workspacePath, input.filename);
+
+    // Write file to workspace
+    await fs.writeFile(filePath, input.content, 'utf-8');
+
+    return {
+      success: true,
+      path: filePath,
+      size: Buffer.byteLength(input.content, 'utf-8'),
+    };
+  },
+});
+```
+
+```typescript
+// my-agent/readFile.ts
+import { z } from 'zod';
+import { tool } from 'together-agent';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+
+export default tool({
+  discoveryTerms: ['file', 'read', 'load', 'open', 'retrieve', 'fetch', 'get', 'document', 'text', 'data'],
+  inputSchema: z.object({
+    filename: z.string().describe('Name of the file to read'),
+  }),
+
+  execute: async (input, context) => {
+    // Use the workspace path from context
+    const filePath = path.join(context.workspacePath, input.filename);
+
+    // Check if file exists
+    try {
+      await fs.access(filePath);
+    } catch (error) {
+      throw new Error(`File not found: ${input.filename}`);
+    }
+
+    // Read file from workspace
+    const content = await fs.readFile(filePath, 'utf-8');
+    const stats = await fs.stat(filePath);
+
+    return {
+      filename: input.filename,
+      content,
+      size: stats.size,
+      modified: stats.mtime,
     };
   },
 });
