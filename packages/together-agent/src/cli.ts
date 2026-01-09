@@ -541,8 +541,14 @@ program
     console.log(`Created temp directory: ${tempDir}`);
 
     try {
-      // Copy the compiled tools to temp
-      const tempToolsPath = path.join(tempDir, "tools");
+      // Copy the agent folder from dist first
+      const agentSourcePath = path.join(__dirname, "agent");
+      const tempAgentPath = path.join(tempDir, "agent");
+      console.log("Copying agent folder...");
+      copyRecursiveSync(agentSourcePath, tempAgentPath);
+
+      // Copy the compiled tools inside the agent folder
+      const tempToolsPath = path.join(tempAgentPath, "tools");
       console.log("Copying compiled tools...");
       copyRecursiveSync(compiledToolsPath, tempToolsPath);
 
@@ -558,18 +564,12 @@ program
         );
       }
 
-      // Copy the agent folder from dist
-      const agentSourcePath = path.join(__dirname, "agent");
-      const tempAgentPath = path.join(tempDir, "agent");
-      console.log("Copying agent folder...");
-      copyRecursiveSync(agentSourcePath, tempAgentPath);
-
       // Create .codesandbox folder with tasks.json
       const codesandboxDir = path.join(tempDir, ".codesandbox");
       fs.mkdirSync(codesandboxDir, { recursive: true });
 
-      // Calculate relative path from temp root to tools folder
-      const relativeToolsPath = "./tools";
+      // Calculate relative path from temp root to tools folder (inside agent folder)
+      const relativeToolsPath = "./agent/tools";
 
       const tasksJson = {
         setupTasks: [`cd ${relativeToolsPath} && npm install`],

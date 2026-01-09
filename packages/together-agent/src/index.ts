@@ -83,13 +83,21 @@ export class TogetherAgentSDK {
     try {
       const sdk = new CodeSandbox();
 
-      // Create a sandbox from the template
+      // Create a private sandbox from the template
       const sandbox = await sdk.sandboxes.create({
         id: templateId,
+        privacy: "private",
       });
 
       const sandboxId = sandbox.id;
-      const url = `https://${sandboxId}-3000.csb.app/prompt`;
+
+      // Generate a host token for the private sandbox (expires in 1 hour)
+      const hostToken = await sdk.hosts.createToken(sandboxId, {
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      });
+
+      // Get the authenticated URL using the host token
+      const url = sdk.hosts.getUrl(hostToken, 3000) + "/prompt";
 
       // Create the agent object with prompt method
       const agent: Agent = {

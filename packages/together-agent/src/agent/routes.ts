@@ -18,6 +18,55 @@ export const router = Router();
 // Agent instance conversation state
 let messages: CoreMessage[] = [];
 
+/**
+ * Creates a minimal together-agent shim package in node_modules if it doesn't exist.
+ * This is a temporary hack until the package is published to npm.
+ */
+function ensureTogetherAgentShim(toolsPath: string): void {
+  const nodeModulesPath = path.join(toolsPath, "node_modules");
+  const togetherAgentPath = path.join(nodeModulesPath, "together-agent");
+
+  // Check if together-agent already exists
+  if (fs.existsSync(togetherAgentPath)) {
+    return;
+  }
+
+  console.log("[SHIM] Creating together-agent shim package...");
+
+  // Create directories
+  fs.mkdirSync(togetherAgentPath, { recursive: true });
+
+  // Create package.json
+  const packageJson = {
+    name: "together-agent",
+    version: "0.1.0",
+    main: "index.js",
+    type: "module",
+  };
+
+  fs.writeFileSync(
+    path.join(togetherAgentPath, "package.json"),
+    JSON.stringify(packageJson, null, 2)
+  );
+
+  // Create index.js with tool function (no TypeScript types)
+  const indexJs = `// Temporary shim for together-agent until package is published
+export function tool(toolDefinition) {
+  return (context) => {
+    return {
+      discoveryTerms: toolDefinition.discoveryTerms,
+      inputSchema: toolDefinition.inputSchema,
+      execute: (input) => toolDefinition.execute(input, context),
+    };
+  };
+}
+`;
+
+  fs.writeFileSync(path.join(togetherAgentPath, "index.js"), indexJs);
+
+  console.log("[SHIM] ✓ together-agent shim created at:", togetherAgentPath);
+}
+
 async function loadTools(
   context: ToolExecutionContext
 ): Promise<Record<string, CustomToolDefinition>> {
@@ -31,6 +80,9 @@ async function loadTools(
     console.warn("No TOOLS_PATH specified, running without tools");
     return {};
   }
+
+  // Ensure together-agent shim exists before loading tools
+  ensureTogetherAgentShim(toolsPath);
 
   const tools: Record<string, CustomToolDefinition> = {};
 
