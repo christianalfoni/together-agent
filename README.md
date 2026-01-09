@@ -66,10 +66,14 @@ Secrets (API keys, credentials, etc.) are handled with strict isolation:
 
 **How secrets are protected:**
 
-1. **Closure-based isolation** - Secrets are exposed to your tool definitions via a closure:
+1. **Context-based isolation** - Secrets are passed via the execution context:
    ```typescript
-   export default (context) => ({
-     execute: async (params) => {
+   import { tool } from 'together-agent';
+
+   export default tool({
+     discoveryTerms: ['example', 'demo'],
+     inputSchema: z.object({ /* ... */ }),
+     execute: async (input, context) => {
        const apiKey = context.secrets.API_KEY;  // ✅ Tools can access secrets
        // ...
      }
@@ -131,7 +135,10 @@ When building custom tools for Together Agent, follow these guidelines to ensure
 
 ❌ **DON'T DO THIS:**
 ```typescript
-export default (context) => ({
+import { tool } from 'together-agent';
+
+export default (context) => tool({
+  inputSchema: z.object({ /* ... */ }),
   execute: async (params) => {
     const apiKey = context.secrets.API_KEY;
     console.log("Using API key:", apiKey);  // ❌ DANGEROUS! Exposes secret to AI
@@ -145,8 +152,12 @@ export default (context) => ({
 
 ✅ **DO THIS INSTEAD:**
 ```typescript
-export default (context) => ({
-  execute: async (params) => {
+import { tool } from 'together-agent';
+
+export default tool({
+  discoveryTerms: ['example', 'demo'],
+  inputSchema: z.object({ /* ... */ }),
+  execute: async (input, context) => {
     const apiKey = context.secrets.API_KEY;
     console.log("Calling API...");           // ✅ SAFE - no secret exposed
 
@@ -215,21 +226,28 @@ try {
 
 ✅ **Implement approval for sensitive actions:**
 ```typescript
-export default (context) => ({
-  description: 'Send an email to a recipient',
-  execute: async ({ to, subject, body }) => {
+import { tool } from 'together-agent';
+
+export default tool({
+  discoveryTerms: ['email', 'send', 'mail', 'message'],
+  inputSchema: z.object({
+    to: z.string(),
+    subject: z.string(),
+    body: z.string(),
+  }),
+  execute: async (input, context) => {
     // Request approval BEFORE performing the action
     await context.requestApproval({
       action: 'send_email',
-      to,
-      subject,
-      body: body.substring(0, 200), // Show preview
+      to: input.to,
+      subject: input.subject,
+      body: input.body.substring(0, 200), // Show preview
       warning: 'This will send a real email to the recipient'
     });
 
     // Only proceeds if user approves
     const apiKey = context.secrets.SENDGRID_API_KEY;
-    await sendEmail(to, subject, body, apiKey);
+    await sendEmail(input.to, input.subject, input.body, apiKey);
 
     return { success: true };
   }
@@ -247,6 +265,8 @@ export default (context) => ({
 
 ✅ **Add per-session rate limiting:**
 ```typescript
+import { tool } from 'together-agent';
+
 // Simple counter-based rate limiting
 let callCount = 0;
 const MAX_CALLS_PER_SESSION = 10;
@@ -254,9 +274,12 @@ const SESSION_TIMEOUT = 60000; // 1 minute
 
 let sessionStart = Date.now();
 
-export default (context) => ({
-  description: 'Search the web',
-  execute: async ({ query }) => {
+export default tool({
+  discoveryTerms: ['search', 'web', 'query', 'find', 'lookup'],
+  inputSchema: z.object({
+    query: z.string(),
+  }),
+  execute: async (input, context) => {
     // Reset counter if session expired
     if (Date.now() - sessionStart > SESSION_TIMEOUT) {
       callCount = 0;
@@ -272,7 +295,7 @@ export default (context) => ({
 
     // Make API call
     const apiKey = context.secrets.BRAVE_API_KEY;
-    return await searchWeb(query, apiKey);
+    return await searchWeb(input.query, apiKey);
   }
 })
 ```
@@ -289,8 +312,12 @@ export default (context) => ({
 
 ✅ **Check for required secrets immediately:**
 ```typescript
-export default (context) => ({
-  execute: async (params) => {
+import { tool } from 'together-agent';
+
+export default tool({
+  discoveryTerms: ['example', 'demo'],
+  inputSchema: z.object({ /* ... */ }),
+  execute: async (input, context) => {
     // Check for required secrets first
     const apiKey = context.secrets.API_KEY;
     if (!apiKey) {
@@ -303,7 +330,7 @@ export default (context) => ({
     }
 
     // Continue with execution
-    return await callAPI(apiKey, params);
+    return await callAPI(apiKey, input);
   }
 })
 ```
@@ -314,18 +341,16 @@ export default (context) => ({
 
 ✅ **Return clean, structured objects:**
 ```typescript
-export default (context) => ({
-  outputSchema: z.object({
-    success: z.boolean(),
-    data: z.object({
-      temperature: z.number(),
-      condition: z.string()
-    })
-  }),
+import { tool } from 'together-agent';
 
-  execute: async ({ location }) => {
+export default tool({
+  discoveryTerms: ['weather', 'temperature', 'forecast'],
+  inputSchema: z.object({
+    location: z.string(),
+  }),
+  execute: async (input, context) => {
     const apiKey = context.secrets.WEATHER_API_KEY;
-    const response = await fetch(`https://api.weather.com?location=${location}`, {
+    const response = await fetch(`https://api.weather.com?location=${input.location}`, {
       headers: { Authorization: `Bearer ${apiKey}` }
     });
 
@@ -385,41 +410,97 @@ You are responsible for:
 
 ## Defining Your Agent
 
-Your agent consists of tools that are TypeScript modules:
+Your agent consists of tools that are TypeScript modules. Use the `tool()` function from `together-agent` to define tools with type safety:
 
 ```typescript
 // my-agent/getWeather.ts
 import { z } from 'zod';
+import { tool } from 'together-agent';
 
-export default {
-  description: 'weather forecast temperature climate conditions degrees fahrenheit celsius rain snow wind humidity',
+export default tool({
+  discoveryTerms: ['weather', 'forecast', 'temperature', 'climate', 'conditions', 'degrees', 'fahrenheit', 'celsius', 'rain', 'snow', 'wind', 'humidity'],
   inputSchema: z.object({
     location: z.string().describe('City name'),
+    units: z.enum(['fahrenheit', 'celsius']).default('fahrenheit').describe('Temperature units'),
   }),
-  execute: async ({ location }) => {
-    // Your implementation
-    return { temperature: 72, condition: 'sunny' };
+  execute: async (input, context) => {
+    // Your weather API call would go here
+    return {
+      location: input.location,
+      temperature: input.units === 'celsius' ? 8 : 46,
+      units: input.units,
+      condition: 'partly cloudy',
+      humidity: 72,
+      windSpeed: 15,
+    };
   },
-}
+});
 ```
 
-**With environment variables (secrets):**
+**Accessing secrets and requesting approval:**
 
 ```typescript
 // my-agent/sendEmail.ts
-export default (context) => ({
-  description: 'email send message mail recipient address notification letter correspondence',
+import { tool } from 'together-agent';
+import { z } from 'zod';
+
+export default tool({
+  discoveryTerms: ['email', 'send', 'message', 'mail', 'recipient', 'address', 'notification', 'letter', 'correspondence'],
   inputSchema: z.object({
     to: z.string().describe('Email address'),
     subject: z.string().describe('Subject line'),
     body: z.string().describe('Email content'),
   }),
-  execute: async ({ to, subject, body }) => {
+  execute: async (input, context) => {
+    // Access secrets from context
     const apiKey = context.secrets.SENDGRID_API_KEY;
+
+    // Request approval for sensitive actions
+    await context.requestApproval({
+      action: 'send_email',
+      to: input.to,
+      subject: input.subject,
+    });
+
     // Send email using apiKey
     return { success: true };
   },
-})
+});
+```
+
+**Multiple tools in one file (named exports):**
+
+```typescript
+// my-agent/emails.ts
+import { tool } from 'together-agent';
+import { z } from 'zod';
+
+export const sendEmail = tool({
+  discoveryTerms: ['email', 'send', 'message', 'mail', 'recipient'],
+  inputSchema: z.object({
+    to: z.string().describe('Email address'),
+    subject: z.string(),
+    body: z.string(),
+  }),
+  execute: async (input, context) => {
+    const apiKey = context.secrets.SENDGRID_API_KEY;
+    // Send email
+    return { success: true };
+  },
+});
+
+export const readEmails = tool({
+  discoveryTerms: ['email', 'read', 'inbox', 'messages', 'unread'],
+  inputSchema: z.object({
+    folder: z.enum(['inbox', 'sent']).default('inbox'),
+    limit: z.number().default(10),
+  }),
+  execute: async (input, context) => {
+    const apiKey = context.secrets.EMAIL_API_KEY;
+    // Read emails
+    return { emails: [] };
+  },
+});
 ```
 
 Pass secrets via CLI using a `.env` file:
@@ -562,16 +643,19 @@ interface ToolExecutionContext {
 
 ### Accessing Secrets
 
-Export a function instead of an object to access context:
+Tools automatically receive context with secrets and approval methods:
 
 ```typescript
 // my-agent/searchWeb.ts
-export default (context) => ({
-  description: 'web search internet browser google bing brave online webpage website url link crawl index',
+import { tool } from 'together-agent';
+import { z } from 'zod';
+
+export default tool({
+  discoveryTerms: ['web', 'search', 'internet', 'browser', 'google', 'bing', 'brave', 'online', 'webpage', 'website', 'url', 'link', 'crawl', 'index'],
   inputSchema: z.object({
     query: z.string(),
   }),
-  execute: async ({ query }) => {
+  execute: async (input, context) => {
     const apiKey = context.secrets.BRAVE_API_KEY;
 
     if (!apiKey) {
@@ -579,7 +663,7 @@ export default (context) => ({
     }
 
     // Use the API key
-    const response = await fetch(`https://api.brave.com?key=${apiKey}`);
+    const response = await fetch(`https://api.brave.com?q=${input.query}&key=${apiKey}`);
     return response.json();
   },
 })
@@ -628,20 +712,23 @@ Some tools perform sensitive actions (send emails, delete data, charge cards). T
 ### Requesting Approval
 
 ```typescript
-export default (context) => ({
-  description: 'Send an email to a recipient',
+import { tool } from 'together-agent';
+import { z } from 'zod';
+
+export default tool({
+  discoveryTerms: ['email', 'send', 'mail', 'message'],
   inputSchema: z.object({
     to: z.string(),
     subject: z.string(),
     body: z.string(),
   }),
-  execute: async ({ to, subject, body }) => {
+  execute: async (input, context) => {
     // Request approval before sending
     await context.requestApproval({
       action: 'send_email',
-      to,
-      subject,
-      body,
+      to: input.to,
+      subject: input.subject,
+      body: input.body,
       warning: 'This will send a real email',
     });
 
@@ -948,31 +1035,42 @@ await agent.reject(message.approvalId);
 
 ### Basic Structure
 
+The `tool()` function from `together-agent` defines tools with access to context (secrets and approvals).
+
 ```typescript
 import { z } from 'zod';
+import { tool, ToolExecutionContext } from 'together-agent';
 
-export default {
-  description: string,
+export default tool({
+  discoveryTerms: string[],
   inputSchema: z.ZodType,
-  outputSchema?: z.ZodType,  // Optional
-  execute: async (params) => any
-}
+  execute: async (input, context) => any
+});
 ```
 
-### With Context (for secrets/approval)
+**Note:** Tools always return a function that takes `ToolExecutionContext`. The agent runtime automatically provides this context when loading tools.
+
+### Named Exports (multiple tools in one file)
 
 ```typescript
-export default (context: ToolExecutionContext) => ({
-  description: string,
+import { tool } from 'together-agent';
+
+export const toolOne = tool({
+  discoveryTerms: string[],
   inputSchema: z.ZodType,
-  outputSchema?: z.ZodType,
-  execute: async (params, context) => any
-})
+  execute: async (input, context) => any
+});
+
+export const toolTwo = tool({
+  discoveryTerms: string[],
+  inputSchema: z.ZodType,
+  execute: async (input, context) => any
+});
 ```
 
-### `description`
+### `discoveryTerms`
 
-**Use keywords for matching!** The description is a space-separated list of keywords used for tool discovery via regex matching. Include:
+**Array of keywords for tool discovery!** The `discoveryTerms` is an array of keywords used for tool discovery via regex matching. Include:
 - Concrete, specific terms (not generic words like "data", "information", "get")
 - Domain-specific terminology
 - Synonyms and related terms
@@ -980,17 +1078,17 @@ export default (context: ToolExecutionContext) => ({
 
 ```typescript
 // ❌ Bad - generic terms that match too broadly
-description: 'get data information from location'
+discoveryTerms: ['get', 'data', 'information', 'from', 'location']
 
 // ✅ Good - concrete, specific keywords
-description: 'weather forecast temperature climate celsius fahrenheit rain snow wind humidity precipitation atmospheric'
+discoveryTerms: ['weather', 'forecast', 'temperature', 'climate', 'celsius', 'fahrenheit', 'rain', 'snow', 'wind', 'humidity', 'precipitation', 'atmospheric']
 ```
 
 Use concrete terms that clearly identify what the tool does. Avoid generic words that could apply to many tools.
 
 ### `inputSchema`
 
-Zod schema defining tool parameters.
+Zod schema defining tool parameters. The `tool()` function provides full type safety - the `execute` function will have correctly typed input based on your schema.
 
 ```typescript
 inputSchema: z.object({
@@ -1006,31 +1104,39 @@ inputSchema: z.object({
 - Mark optional fields with `.optional()` or `.default()`
 - Use enums for constrained values
 
-### `outputSchema` (optional)
-
-Zod schema defining the expected output structure.
-
+**Type safety example:**
 ```typescript
-outputSchema: z.object({
-  temperature: z.number().describe('Temperature value'),
-  condition: z.string().describe('Weather condition'),
-  humidity: z.number().optional(),
-})
-```
+import { tool } from 'together-agent';
+import { z } from 'zod';
 
-Helps the AI understand what data your tool returns.
+export default tool({
+  discoveryTerms: ['weather', 'temperature', 'forecast'],
+  inputSchema: z.object({
+    location: z.string(),
+    units: z.enum(['fahrenheit', 'celsius']).optional(),
+  }),
+  execute: async (input, context) => {
+    // ✅ TypeScript knows:
+    // - input.location is string
+    // - input.units is 'fahrenheit' | 'celsius' | undefined
+    return { temperature: 72 };
+  },
+});
+```
 
 ### `execute`
 
-Async function that performs the tool's action.
+Async function that performs the tool's action. Receives two parameters:
 
+1. **`input`** - The validated input parameters (typed based on your schema)
+2. **`context`** - The `ToolExecutionContext` with `secrets` and `requestApproval`
 ```typescript
-execute: async (params, context?) => {
-  // Access validated input
-  const { location, units } = params;
+execute: async (input, context) => {
+  // Access validated input (fully typed)
+  const { location, units } = input;
 
-  // Access secrets (if using context)
-  const apiKey = context?.secrets.WEATHER_API_KEY;
+  // Access secrets from context
+  const apiKey = context.secrets.WEATHER_API_KEY;
 
   // Perform action
   const data = await fetchWeatherData(location, apiKey);
@@ -1048,6 +1154,7 @@ execute: async (params, context?) => {
 - Handle errors with clear messages
 - Return structured data (objects, arrays)
 - Log useful information with `console.log()` during debugging
+- Check `options.abortSignal` for long-running operations
 
 ---
 
@@ -1069,9 +1176,9 @@ execute: async (params, context?) => {
 ### Error Handling
 
 ```typescript
-execute: async ({ email }) => {
+execute: async (input, context) => {
   // Validate inputs
-  if (!email.includes('@')) {
+  if (!input.email.includes('@')) {
     throw new Error('Invalid email format');
   }
 
@@ -1083,7 +1190,7 @@ execute: async ({ email }) => {
 
   // Handle API errors
   try {
-    const result = await callAPI(email, apiKey);
+    const result = await callAPI(input.email, apiKey);
     return result;
   } catch (error) {
     throw new Error(`API call failed: ${error.message}`);
@@ -1236,23 +1343,16 @@ await agent.prompt('message', {
 ```typescript
 // my-agent/getWeather.ts
 import { z } from 'zod';
+import { tool } from 'together-agent';
 
-export default (context) => ({
-  description: 'weather forecast temperature climate meteorology fahrenheit celsius precipitation rain snow drizzle hail storm thunderstorm wind humidity barometric pressure sunny cloudy overcast foggy',
-
+export default tool({
+  discoveryTerms: ['weather', 'forecast', 'temperature', 'climate', 'meteorology', 'fahrenheit', 'celsius', 'precipitation', 'rain', 'snow', 'drizzle', 'hail', 'storm', 'thunderstorm', 'wind', 'humidity', 'barometric', 'pressure', 'sunny', 'cloudy', 'overcast', 'foggy'],
   inputSchema: z.object({
     location: z.string().describe('City name, region, or coordinates'),
-    units: z.enum(['fahrenheit', 'celsius']).default('fahrenheit'),
+    units: z.enum(['fahrenheit', 'celsius']).default('fahrenheit').describe('Temperature units (fahrenheit or celsius)'),
   }),
 
-  outputSchema: z.object({
-    temperature: z.number(),
-    condition: z.string(),
-    humidity: z.number(),
-    windSpeed: z.number(),
-  }),
-
-  execute: async ({ location, units }) => {
+  execute: async (input, context) => {
     const apiKey = context.secrets.WEATHER_API_KEY;
 
     if (!apiKey) {
@@ -1260,7 +1360,7 @@ export default (context) => ({
     }
 
     const response = await fetch(
-      `https://api.weather.com/v1/current?location=${location}&units=${units}&key=${apiKey}`
+      `https://api.weather.com/v1/current?location=${input.location}&units=${input.units}&key=${apiKey}`
     );
 
     if (!response.ok) {
@@ -1270,10 +1370,13 @@ export default (context) => ({
     const data = await response.json();
 
     return {
+      location: input.location,
       temperature: data.temp,
+      units: input.units,
       condition: data.weather,
       humidity: data.humidity,
       windSpeed: data.wind_speed,
+      feelsLike: data.feels_like,
     };
   },
 });
@@ -1284,28 +1387,23 @@ export default (context) => ({
 ```typescript
 // my-agent/sendEmail.ts
 import { z } from 'zod';
+import { tool } from 'together-agent';
 
-export default (context) => ({
-  description: 'email send mail SMTP message recipient address inbox outbox compose deliver notification alert reminder newsletter sendgrid mailgun postmark',
-
+export default tool({
+  discoveryTerms: ['email', 'send', 'mail', 'SMTP', 'message', 'recipient', 'address', 'inbox', 'outbox', 'compose', 'deliver', 'notification', 'alert', 'reminder', 'newsletter', 'sendgrid', 'mailgun', 'postmark'],
   inputSchema: z.object({
     to: z.string().describe('Recipient email address'),
     subject: z.string().describe('Email subject line'),
     body: z.string().describe('Email body content'),
   }),
 
-  outputSchema: z.object({
-    success: z.boolean(),
-    messageId: z.string(),
-  }),
-
-  execute: async ({ to, subject, body }) => {
+  execute: async (input, context) => {
     // Request approval before sending
     await context.requestApproval({
       action: 'send_email',
-      to,
-      subject,
-      preview: body.substring(0, 100),
+      to: input.to,
+      subject: input.subject,
+      preview: input.body.substring(0, 100),
       warning: 'This will send a real email to the recipient',
     }, 30000);  // 30 second timeout
 
@@ -1323,10 +1421,10 @@ export default (context) => ({
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        personalizations: [{ to: [{ email: to }] }],
+        personalizations: [{ to: [{ email: input.to }] }],
         from: { email: 'noreply@example.com' },
-        subject,
-        content: [{ type: 'text/plain', value: body }],
+        subject: input.subject,
+        content: [{ type: 'text/plain', value: input.body }],
       }),
     });
 
@@ -1347,17 +1445,17 @@ export default (context) => ({
 ```typescript
 // my-agent/queryDatabase.ts
 import { z } from 'zod';
+import { tool } from 'together-agent';
 
-export default (context) => ({
-  description: 'database query SQL SELECT WHERE table column row record postgres mysql sqlite mongodb collection document filter JOIN aggregate',
-
+export default tool({
+  discoveryTerms: ['database', 'query', 'SQL', 'SELECT', 'WHERE', 'table', 'column', 'row', 'record', 'postgres', 'mysql', 'sqlite', 'mongodb', 'collection', 'document', 'filter', 'JOIN', 'aggregate'],
   inputSchema: z.object({
     table: z.string().describe('Table or collection name'),
     filters: z.record(z.any()).optional().describe('Filter conditions'),
     limit: z.number().default(10),
   }),
 
-  execute: async ({ table, filters, limit }) => {
+  execute: async (input, context) => {
     const dbUrl = context.secrets.DATABASE_URL;
 
     if (!dbUrl) {
@@ -1365,8 +1463,8 @@ export default (context) => ({
     }
 
     // Build and execute query (simplified example)
-    console.log(`Querying table: ${table}`);
-    console.log(`Filters:`, filters);
+    console.log(`Querying table: ${input.table}`);
+    console.log(`Filters:`, input.filters);
 
     // Simulate query execution
     const results = [
@@ -1374,9 +1472,9 @@ export default (context) => ({
     ];
 
     return {
-      table,
+      table: input.table,
       count: results.length,
-      results: results.slice(0, limit),
+      results: results.slice(0, input.limit),
     };
   },
 });

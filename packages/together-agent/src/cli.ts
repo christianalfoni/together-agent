@@ -45,6 +45,7 @@ program
         build: "tsc",
       },
       dependencies: {
+        "together-agent": "latest",
         zod: "latest",
       },
       devDependencies: {
@@ -66,7 +67,6 @@ program
         lib: ["ES2020"],
         outDir: "./dist",
         rootDir: "./",
-        declaration: true,
         strict: true,
         esModuleInterop: true,
         skipLibCheck: true,
@@ -85,17 +85,26 @@ program
 
     // Create getWeather.ts
     const getWeatherContent = `import { z } from 'zod'
+import { tool } from 'together-agent'
 
-export default {
-  description: 'Get the current weather in a location',
+export default tool({
+  discoveryTerms: ['weather', 'temperature', 'climate', 'forecast', 'conditions'],
   inputSchema: z.object({
     location: z.string().describe('The city name'),
+    units: z.enum(['fahrenheit', 'celsius']).default('fahrenheit').describe('Temperature units'),
   }),
-  execute: async ({ location }) => {
-    // Your weather API call
-    return { temperature: 72, condition: 'sunny' };
+  execute: async ({ location, units }, context) => {
+    // Your weather API call would go here
+    return {
+      location,
+      temperature: units === 'celsius' ? 8 : 46,
+      units,
+      condition: 'partly cloudy',
+      humidity: 72,
+      windSpeed: 15,
+    };
   },
-}
+})
 `;
 
     fs.writeFileSync(

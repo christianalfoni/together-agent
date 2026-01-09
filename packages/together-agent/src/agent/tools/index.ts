@@ -2,14 +2,9 @@ import { z } from "zod";
 import { discoverToolsInMemory } from "./discover_tools";
 import { executeTools } from "./execute_tools";
 import { executeCode } from "./execute_code";
+import { CustomToolDefinition } from "../../index";
 
-type Tool = {
-  description?: string;
-  inputSchema: z.ZodType<any>;
-  execute: (params: any) => Promise<any> | any;
-};
-
-export function createCodeTools(tools: Record<string, Tool>) {
+export function createCodeTools(tools: Record<string, CustomToolDefinition>) {
   return {
     discover_tools: {
       description:

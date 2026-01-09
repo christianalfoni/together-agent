@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { createTogetherAI } from "@ai-sdk/togetherai";
-import { streamText, stepCountIs, tool, CoreMessage } from "ai";
+import { streamText, stepCountIs, tool as aiSDKTool, CoreMessage } from "ai";
 import { createCodeTools } from "./tools";
 import * as fs from "fs";
 import * as path from "path";
@@ -11,21 +11,28 @@ import {
   createApprovalRequest,
   resolveApproval,
 } from "./approval";
+import { CustomToolDefinition } from "../index";
 
 export const router = Router();
 
 // Agent instance conversation state
 let messages: CoreMessage[] = [];
 
-async function loadTools(context: ToolExecutionContext) {
+async function loadTools(
+  context: ToolExecutionContext
+): Promise<Record<string, CustomToolDefinition>> {
   const toolsPath = process.env.TOOLS_PATH;
+
+  console.log("[DEBUG] loadTools called");
+  console.log("[DEBUG] TOOLS_PATH:", toolsPath);
+  console.log("[DEBUG] process.env keys:", Object.keys(process.env).join(", "));
 
   if (!toolsPath) {
     console.warn("No TOOLS_PATH specified, running without tools");
     return {};
   }
 
-  const tools: Record<string, any> = {};
+  const tools: Record<string, CustomToolDefinition> = {};
 
   try {
     const files = fs.readdirSync(toolsPath);
@@ -33,30 +40,55 @@ async function loadTools(context: ToolExecutionContext) {
 
     for (const file of jsFiles) {
       const toolPath = path.join(toolsPath, file);
-      const toolName = path.basename(file, ".js");
+      const fileName = path.basename(file, ".js");
 
       try {
         // Use dynamic import with file:// URL for ESM compatibility
         const toolModule = await import(pathToFileURL(toolPath).href);
-        const toolDef =
-          typeof toolModule.default === "function"
-            ? toolModule.default(context)
-            : toolModule.default;
 
-        if (
-          !toolDef ||
-          !toolDef.description ||
-          !toolDef.inputSchema ||
-          !toolDef.execute
-        ) {
-          console.warn(
-            `Skipping ${file}: missing required fields (description, inputSchema, execute)`
-          );
-          continue;
+        // Process default export (use filename as tool name)
+        if (toolModule.default) {
+          let toolDef =
+            typeof toolModule.default === "function"
+              ? toolModule.default(context)
+              : toolModule.default;
+
+          if (
+            toolDef &&
+            toolDef.discoveryTerms &&
+            toolDef.inputSchema &&
+            toolDef.execute
+          ) {
+            tools[fileName] = toolDef;
+          } else {
+            console.warn(
+              `Skipping default export in ${file}: missing required fields (discoveryTerms, inputSchema, execute)`
+            );
+          }
         }
 
-        // Store tool definition (will be wrapped later)
-        tools[toolName] = toolDef;
+        // Process named exports (use export name as tool name)
+        for (const [exportName, exportValue] of Object.entries(toolModule)) {
+          if (exportName === "default") continue;
+
+          let toolDef =
+            typeof exportValue === "function"
+              ? exportValue(context)
+              : exportValue;
+
+          if (
+            toolDef &&
+            toolDef.discoveryTerms &&
+            toolDef.inputSchema &&
+            toolDef.execute
+          ) {
+            tools[exportName] = toolDef;
+          } else {
+            console.warn(
+              `Skipping named export '${exportName}' in ${file}: missing required fields (discoveryTerms, inputSchema, execute)`
+            );
+          }
+        }
       } catch (err) {
         console.error(`Failed to load tool ${file}:`, err);
       }
@@ -65,15 +97,17 @@ async function loadTools(context: ToolExecutionContext) {
     console.error("Failed to load tools:", err);
   }
 
+  console.log("[DEBUG] Loaded tools:", Object.keys(tools));
+  console.log("[DEBUG] Tool count:", Object.keys(tools).length);
+
   return tools;
 }
 
 function wrapCustomToolWithMessages(
   toolName: string,
-  toolDef: any,
-  sendMessage: (message: AgentMessage) => void,
-  context: ToolExecutionContext
-) {
+  toolDef: CustomToolDefinition,
+  sendMessage: (message: AgentMessage) => void
+): CustomToolDefinition {
   return {
     ...toolDef,
     execute: async (params: any) => {
@@ -89,7 +123,7 @@ function wrapCustomToolWithMessages(
       });
 
       try {
-        const result = await toolDef.execute(params, context);
+        const result = await toolDef.execute(params);
 
         // Send custom tool completed message
         sendMessage({
@@ -118,13 +152,17 @@ function wrapCustomToolWithMessages(
   };
 }
 
+/**
+ * Wraps native tools with message sending and converts them to AI SDK tool format
+ */
 function wrapNativeToolsWithMessages(
   tools: Record<string, any>,
   sendMessage: (message: AgentMessage) => void
 ) {
   return {
-    discover_tools: {
-      ...tools.discover_tools,
+    discover_tools: aiSDKTool({
+      description: tools.discover_tools.description,
+      inputSchema: tools.discover_tools.inputSchema as any,
       execute: async (params: { query: string }) => {
         const result = await tools.discover_tools.execute(params);
 
@@ -140,9 +178,10 @@ function wrapNativeToolsWithMessages(
 
         return result;
       },
-    },
-    execute_tools: {
-      ...tools.execute_tools,
+    }),
+    execute_tools: aiSDKTool({
+      description: tools.execute_tools.description,
+      inputSchema: tools.execute_tools.inputSchema as any,
       execute: async (params: { code: string }) => {
         // Send started message with code BEFORE execution
         sendMessage({
@@ -161,9 +200,10 @@ function wrapNativeToolsWithMessages(
 
         return result;
       },
-    },
-    execute_code: {
-      ...tools.execute_code,
+    }),
+    execute_code: aiSDKTool({
+      description: tools.execute_code.description,
+      inputSchema: tools.execute_code.inputSchema as any,
       execute: async (params: { code: string }) => {
         // Send started message with code BEFORE execution
         sendMessage({
@@ -182,7 +222,7 @@ function wrapNativeToolsWithMessages(
 
         return result;
       },
-    },
+    }),
   };
 }
 
@@ -343,23 +383,20 @@ Be confident, natural, and focus on the user's intent rather than the technical 
     const together = createTogetherAI({ apiKey });
     const customTools = await loadTools(context);
 
-    // Wrap custom tools to send started/completed messages, then convert to AI SDK format
-    const wrappedCustomTools: Record<string, any> = {};
+    // Wrap custom tools to send started/completed messages
+    const wrappedCustomTools: Record<string, CustomToolDefinition> = {};
     for (const [toolName, toolDef] of Object.entries(customTools)) {
-      const wrappedTool = wrapCustomToolWithMessages(
+      wrappedCustomTools[toolName] = wrapCustomToolWithMessages(
         toolName,
         toolDef,
-        queueMessage,
-        context
+        queueMessage
       );
-      // Convert to AI SDK tool format AFTER wrapping for messages
-      wrappedCustomTools[toolName] = tool(wrappedTool);
     }
 
-    // Create code tools (native tools)
+    // Create code tools (native tools) with wrapped custom tools
     const codeTools = createCodeTools(wrappedCustomTools);
 
-    // Wrap native tools to send completion messages
+    // Wrap native tools to send completion messages and convert to AI SDK format
     const wrappedNativeTools = wrapNativeToolsWithMessages(codeTools, queueMessage);
 
     const result = streamText({

@@ -1,0 +1,21 @@
+{
+  "name": "together-agent-presentation",
+  "version": "1.0.0",
+  "description": "Demo application for Together Agent SDK",
+  "type": "module",
+  "main": "demo.js",
+  "scripts": {
+    "start": "node demo.js"
+  },
+  "keywords": [
+    "together",
+    "agent",
+    "demo"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "together-agent": "workspace:*"
+  }
+}

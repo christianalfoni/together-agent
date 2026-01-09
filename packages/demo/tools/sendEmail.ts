@@ -1,36 +1,34 @@
 import { google } from 'googleapis';
+import { tool } from 'together-agent';
 import { z } from 'zod';
 
 // Tool factory pattern - this function receives the context and returns the tool definition
-export default (context: {
-  secrets: Record<string, string>;
-  requestApproval: (payload: any, timeout?: number) => Promise<void>;
-}) => ({
-  description: `
-    Send an email via Gmail on behalf of the user.
-
-    This tool requires USER APPROVAL before sending. The user will see the email details
-    and must explicitly approve before it is sent.
-
-    Use this tool to:
-    - Compose and send new emails
-    - Reply to messages (by including context)
-    - Send notifications or reminders
-    - Draft professional correspondence
-
-    Keywords: email, mail, gmail, send, compose, draft, write, message, reply, respond,
-    forward, dispatch, transmit, deliver, communicate, correspondence, letter, note,
-    memo, communicate with, reach out, contact, notify, inform, tell, let know,
-    create email, new email, email to, message to
-
-    Use this tool when the user asks to:
-    - "Send an email to [person]"
-    - "Email [person] about [topic]"
-    - "Compose a message to [person]"
-    - "Reply to [person] saying [message]"
-    - "Let [person] know that [message]"
-    - "Draft an email to [person]"
-  `,
+export default tool({
+  discoveryTerms: [
+    'email',
+    'mail',
+    'gmail',
+    'send',
+    'compose',
+    'draft',
+    'write',
+    'message',
+    'reply',
+    'respond',
+    'forward',
+    'dispatch',
+    'transmit',
+    'deliver',
+    'communicate',
+    'correspondence',
+    'letter',
+    'note',
+    'memo',
+    'reach out',
+    'contact',
+    'notify',
+    'inform',
+  ],
   inputSchema: z.object({
     to: z
       .string()
@@ -55,7 +53,7 @@ export default (context: {
     body: string;
     cc?: string;
     bcc?: string;
-  }) => {
+  }, context) => {
     const { to, subject, body, cc, bcc } = params;
 
     // Request approval before sending

@@ -1,29 +1,35 @@
-import { google } from 'googleapis';
-import { z } from 'zod';
+import { google } from "googleapis";
+import { tool } from "together-agent";
+import { z } from "zod";
 
 // Tool definition for reading Gmail emails
-export default {
-  description: `
-    Read and query emails from Gmail inbox.
-
-    This tool allows you to:
-    - List unread emails
-    - Search for specific emails using Gmail search syntax
-    - Get email details including subject, sender, date, and content
-    - Filter emails by various criteria
-
-    Keywords: email, mail, gmail, message, inbox, unread, read, list, query, search,
-    messages, correspondence, letter, communication, retrieve, fetch, get, show,
-    display, view, check, find, look up, examine, review
-
-    Use this tool when the user asks to:
-    - "Show me my emails"
-    - "What are my unread messages?"
-    - "Check my inbox"
-    - "Find emails from [person]"
-    - "Search for emails about [topic]"
-    - "List my latest emails"
-  `,
+export default tool({
+  discoveryTerms: [
+    'email',
+    'mail',
+    'gmail',
+    'message',
+    'inbox',
+    'unread',
+    'read',
+    'list',
+    'query',
+    'search',
+    'messages',
+    'correspondence',
+    'letter',
+    'communication',
+    'retrieve',
+    'fetch',
+    'get',
+    'show',
+    'display',
+    'view',
+    'check',
+    'find',
+    'examine',
+    'review',
+  ],
   inputSchema: z.object({
     query: z
       .string()
@@ -36,18 +42,15 @@ export default {
       .min(1)
       .max(50)
       .default(10)
-      .describe('Maximum number of emails to return (1-50, default: 10)'),
+      .describe("Maximum number of emails to return (1-50, default: 10)"),
   }),
-  execute: async (
-    params: { query?: string; maxResults?: number },
-    context: { secrets: Record<string, string> }
-  ) => {
-    const { query = 'is:unread', maxResults = 10 } = params;
+  execute: async (params, context) => {
+    const { query = "is:unread", maxResults = 10 } = params;
 
     // Get Google access token from secrets
     const accessToken = context.secrets.GOOGLE_ACCESS_TOKEN;
     if (!accessToken) {
-      throw new Error('Google access token not found. Please sign in again.');
+      throw new Error("Google access token not found. Please sign in again.");
     }
 
     try {
@@ -56,11 +59,11 @@ export default {
       oauth2Client.setCredentials({ access_token: accessToken });
 
       // Create Gmail API client
-      const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+      const gmail = google.gmail({ version: "v1", auth: oauth2Client });
 
       // List messages matching the query
       const listResponse = await gmail.users.messages.list({
-        userId: 'me',
+        userId: "me",
         q: query,
         maxResults: maxResults,
       });
@@ -80,36 +83,38 @@ export default {
       const emailDetails = await Promise.all(
         messages.map(async (message) => {
           const details = await gmail.users.messages.get({
-            userId: 'me',
+            userId: "me",
             id: message.id!,
-            format: 'full',
+            format: "full",
           });
 
           const headers = details.data.payload?.headers || [];
           const getHeader = (name: string) =>
             headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())
-              ?.value || '';
+              ?.value || "";
 
           // Extract email body
-          let body = '';
+          let body = "";
           const parts = details.data.payload?.parts || [];
 
           // Try to get plain text body
-          const textPart = parts.find((part) => part.mimeType === 'text/plain');
+          const textPart = parts.find((part) => part.mimeType === "text/plain");
           if (textPart?.body?.data) {
-            body = Buffer.from(textPart.body.data, 'base64').toString('utf-8');
+            body = Buffer.from(textPart.body.data, "base64").toString("utf-8");
           } else if (details.data.payload?.body?.data) {
             // If no parts, try to get body directly
             body = Buffer.from(
               details.data.payload.body.data,
-              'base64'
-            ).toString('utf-8');
+              "base64"
+            ).toString("utf-8");
           } else {
             // Try HTML part as fallback
-            const htmlPart = parts.find((part) => part.mimeType === 'text/html');
+            const htmlPart = parts.find(
+              (part) => part.mimeType === "text/html"
+            );
             if (htmlPart?.body?.data) {
-              body = Buffer.from(htmlPart.body.data, 'base64').toString(
-                'utf-8'
+              body = Buffer.from(htmlPart.body.data, "base64").toString(
+                "utf-8"
               );
               body = `[HTML content] ${body.substring(0, 500)}...`;
             }
@@ -117,21 +122,21 @@ export default {
 
           // Get snippet if no body found
           if (!body) {
-            body = details.data.snippet || '[No content available]';
+            body = details.data.snippet || "[No content available]";
           }
 
           // Truncate long bodies
           if (body.length > 1000) {
-            body = body.substring(0, 1000) + '... [truncated]';
+            body = body.substring(0, 1000) + "... [truncated]";
           }
 
           return {
             id: message.id,
             threadId: details.data.threadId,
-            from: getHeader('from'),
-            to: getHeader('to'),
-            subject: getHeader('subject'),
-            date: getHeader('date'),
+            from: getHeader("from"),
+            to: getHeader("to"),
+            subject: getHeader("subject"),
+            date: getHeader("date"),
             snippet: details.data.snippet,
             body: body,
             labels: details.data.labelIds || [],
@@ -149,17 +154,17 @@ export default {
       // Handle specific Gmail API errors
       if (error.code === 401) {
         throw new Error(
-          'Google access token expired. Please sign in again to refresh your access.'
+          "Google access token expired. Please sign in again to refresh your access."
         );
       }
 
       if (error.code === 403) {
         throw new Error(
-          'Insufficient permissions to access Gmail. Please ensure you granted the required scopes during sign-in.'
+          "Insufficient permissions to access Gmail. Please ensure you granted the required scopes during sign-in."
         );
       }
 
       throw new Error(`Failed to read emails: ${error.message}`);
     }
   },
-};
+});

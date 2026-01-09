@@ -1,14 +1,9 @@
 import z from "zod";
-
-type Tool = {
-  description?: string;
-  inputSchema: z.ZodType<any>;
-  execute: (params: any) => Promise<any> | any;
-};
+import { CustomToolDefinition } from "../../index";
 
 export function discoverToolsInMemory(
   query: string,
-  tools: Record<string, Tool>
+  tools: Record<string, CustomToolDefinition>
 ) {
   try {
     const matchedTools: Array<{ name: string; schema: any; matchCount: number }> = [];
@@ -20,12 +15,14 @@ export function discoverToolsInMemory(
       // Stringify the schema for searching
       const schemaJson = z.toJSONSchema(tool.inputSchema);
       const schemaString = JSON.stringify(schemaJson);
-      const description = tool.description || "";
 
-      // Count how many query words match in tool name, description, or schema
+      // Join discovery terms for searching
+      const discoveryTermsString = tool.discoveryTerms.join(" ");
+
+      // Count how many query words match in tool name, discoveryTerms, or schema
       let matchCount = 0;
       for (const regex of regexes) {
-        if (regex.test(name) || regex.test(description) || regex.test(schemaString)) {
+        if (regex.test(name) || regex.test(discoveryTermsString) || regex.test(schemaString)) {
           matchCount++;
         }
       }
