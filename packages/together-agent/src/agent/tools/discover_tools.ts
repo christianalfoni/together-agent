@@ -12,10 +12,15 @@ export function discoverToolsInMemory(
     const regexes = queryWords.map(word => new RegExp(word, "i"));
 
     for (const [name, tool] of Object.entries(tools)) {
-      // Stringify the schemas for searching
+      // Convert Zod schemas to JSON Schema and ensure they're fully serializable
       const inputSchemaJson = z.toJSONSchema(tool.inputSchema);
       const outputSchemaJson = z.toJSONSchema(tool.outputSchema);
-      const schemaString = JSON.stringify(inputSchemaJson) + JSON.stringify(outputSchemaJson);
+
+      // Deep clone via JSON to ensure no circular references or non-serializable data
+      const cleanInputSchema = JSON.parse(JSON.stringify(inputSchemaJson));
+      const cleanOutputSchema = JSON.parse(JSON.stringify(outputSchemaJson));
+
+      const schemaString = JSON.stringify(cleanInputSchema) + JSON.stringify(cleanOutputSchema);
 
       // Join discovery terms for searching
       const discoveryTermsString = tool.discoveryTerms.join(" ");
@@ -31,8 +36,8 @@ export function discoverToolsInMemory(
       if (matchCount > 0) {
         matchedTools.push({
           name,
-          inputSchema: inputSchemaJson,
-          outputSchema: outputSchemaJson,
+          inputSchema: cleanInputSchema,
+          outputSchema: cleanOutputSchema,
           matchCount,
         });
       }
@@ -49,7 +54,8 @@ export function discoverToolsInMemory(
     }));
 
     return { tools: sortedTools };
-  } catch {
+  } catch (err) {
+    console.error("ERROR in discoverToolsInMemory:", err);
     return { tools: [] };
   }
 }

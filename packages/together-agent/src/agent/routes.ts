@@ -19,6 +19,8 @@ export const router = Router();
 
 // Agent instance conversation state
 let messages: CoreMessage[] = [];
+// Track tools that have been discovered in this session (for deduplication)
+let discoveredTools: Set<string> = new Set();
 
 /**
  * Creates a minimal together-agent shim package in node_modules if it doesn't exist.
@@ -213,17 +215,26 @@ function wrapNativeToolsWithMessages(
       execute: async (params: { query: string }) => {
         const result = await tools.discover_tools.execute(params);
 
-        // Extract tool names from the result
-        const matchedTools = result.tools?.map((t: any) => t.name) || [];
+        // Filter out tools that have already been discovered in this session
+        const newTools = result.tools?.filter((t: any) => !discoveredTools.has(t.name)) || [];
+
+        // Add newly discovered tools to the set
+        newTools.forEach((t: any) => discoveredTools.add(t.name));
+
+        // Extract tool names for the message (including all matched tools, not just new ones)
+        const allMatchedTools = result.tools?.map((t: any) => t.name) || [];
 
         // Send discovery completion message
         sendMessage({
           type: "discover_tools",
           query: params.query,
-          matchedTools,
+          matchedTools: allMatchedTools,
         });
 
-        return result;
+        // IMPORTANT: Convert to JSON string to avoid AI SDK validation issues
+        // The AI SDK stores tool results in message history, and complex nested objects
+        // with schemas cause validation failures. By stringifying, we ensure clean serialization.
+        return JSON.stringify({ tools: newTools }, null, 2);
       },
     }),
     execute_code: aiSDKTool({
@@ -570,7 +581,8 @@ Be confident, natural, and focus on the user's intent rather than the technical 
     // Get the final messages from the result
     const finalMessages = await result.response.then((r) => r.messages);
 
-    // Filter out only discover_tools calls to reduce token usage
+    // Filter out ALL tool CALLS (but keep the RESULTS for KV caching and LLM context)
+    // Tool calls are redundant - they're highly variable (breaks caching) and the results contain what matters
     const filteredMessages = finalMessages
       .map((msg) => {
         // Keep all user messages as-is
@@ -578,34 +590,24 @@ Be confident, natural, and focus on the user's intent rather than the technical 
           return msg;
         }
 
-        // For assistant messages, filter out discover_tools calls from content
+        // For assistant messages, filter out ALL tool calls
+        // The tool results contain the actual valuable information
         if (msg.role === "assistant") {
           const content = Array.isArray(msg.content) ? msg.content : [msg.content];
           const filteredContent = content.filter(
-            (c: any) => !(c.type === "tool-call" && c.toolName === "discover_tools")
+            (c: any) => c.type !== "tool-call"
           );
 
-          // Only keep the message if it has remaining content
+          // Only keep the message if it has remaining content (e.g., text responses)
           if (filteredContent.length > 0) {
             return { ...msg, content: filteredContent };
           }
           return null;
         }
 
-        // For tool result messages, filter out discover_tools results
-        if (msg.role === "tool") {
-          const content = Array.isArray(msg.content) ? msg.content : [msg.content];
-          const filteredContent = content.filter(
-            (c: any) => !(c.type === "tool-result" && c.toolName === "discover_tools")
-          );
-
-          // Only keep the message if it has remaining content
-          if (filteredContent.length > 0) {
-            return { ...msg, content: filteredContent };
-          }
-          return null;
-        }
-
+        // Keep ALL tool results - they contain the valuable information
+        // - discover_tools results: contain tool schemas
+        // - execute_code results: contain execution outcomes (markdown summaries)
         return msg;
       })
       .filter((msg): msg is CoreMessage => msg !== null);
