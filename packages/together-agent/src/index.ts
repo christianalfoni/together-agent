@@ -19,6 +19,12 @@ export interface CustomToolDefinition<INPUT = any, RESULT = any> {
   inputSchema: z.ZodType<INPUT>;
 
   /**
+   * Zod schema defining the output/result structure of this tool
+   * Used by the LLM to understand what data the tool returns
+   */
+  outputSchema: z.ZodType<RESULT>;
+
+  /**
    * Execute function that performs the tool's action
    * @param input - The validated input parameters
    * @param context - Tool execution context with secrets and approval methods
@@ -38,6 +44,7 @@ export function tool<INPUT = any, RESULT = any>(
     return {
       discoveryTerms: toolDefinition.discoveryTerms,
       inputSchema: toolDefinition.inputSchema,
+      outputSchema: toolDefinition.outputSchema,
       execute: (input: INPUT) => toolDefinition.execute(input, context),
     };
   };
@@ -85,21 +92,34 @@ export class TogetherAgentSDK {
     try {
       const sdk = new CodeSandbox();
 
-      // Create a private sandbox from the template
+      // TODO: Fix API bug - Private sandboxes and host tokens are not working yet
+      // Once the API is fixed, uncomment this code and remove the temporary public sandbox workaround below
+
+      // // Create a private sandbox from the template
+      // const sandbox = await sdk.sandboxes.create({
+      //   id: templateId,
+      //   privacy: "private",
+      // });
+
+      // const sandboxId = sandbox.id;
+
+      // // Generate a host token for the private sandbox (expires in 1 hour)
+      // const hostToken = await sdk.hosts.createToken(sandboxId, {
+      //   expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      // });
+
+      // // Get the authenticated URL using the host token
+      // const baseUrl = sdk.hosts.getUrl(hostToken, 3000);
+      // const url = baseUrl + "/prompt";
+
+      // TEMPORARY: Using public sandbox until API is fixed
       const sandbox = await sdk.sandboxes.create({
         id: templateId,
-        privacy: "private",
+        privacy: "public",
       });
 
       const sandboxId = sandbox.id;
-
-      // Generate a host token for the private sandbox (expires in 1 hour)
-      const hostToken = await sdk.hosts.createToken(sandboxId, {
-        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
-      });
-
-      // Get the authenticated URL using the host token
-      const baseUrl = sdk.hosts.getUrl(hostToken, 3000);
+      const baseUrl = `https://${sandboxId}-3000.csb.app`;
       const url = baseUrl + "/prompt";
 
       // Create the agent object with prompt method

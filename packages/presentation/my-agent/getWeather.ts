@@ -16,6 +16,14 @@ export default tool({
       .default("fahrenheit")
       .describe("Temperature units"),
   }),
+  outputSchema: z.object({
+    location: z.string(),
+    temperature: z.number(),
+    units: z.enum(["fahrenheit", "celsius"]),
+    condition: z.string(),
+    humidity: z.number(),
+    windSpeed: z.number(),
+  }),
   execute: async ({ location, units }) => {
     // Your weather API call would go here
     return {

@@ -93,6 +93,14 @@ export default tool({
     location: z.string().describe('The city name'),
     units: z.enum(['fahrenheit', 'celsius']).default('fahrenheit').describe('Temperature units'),
   }),
+  outputSchema: z.object({
+    location: z.string().describe('The city name'),
+    temperature: z.number().describe('Current temperature'),
+    units: z.enum(['fahrenheit', 'celsius']).describe('Temperature units'),
+    condition: z.string().describe('Weather condition'),
+    humidity: z.number().describe('Humidity percentage'),
+    windSpeed: z.number().describe('Wind speed'),
+  }),
   execute: async ({ location, units }, context) => {
     // Your weather API call would go here
     return {
@@ -192,7 +200,6 @@ program
     }
 
     console.log(`Starting agent server on port ${port}...`);
-    console.log(`Loading tools from: ${toolsRuntimePath}`);
 
     // Get the path to the agent script
     const agentPath = path.join(__dirname, "agent", "index.js");
@@ -352,7 +359,7 @@ program
                   }
 
                   switch (message.type) {
-                    case "tool_discovery_completed":
+                    case "discover_tools":
                       console.log("\n" + "─".repeat(70));
                       console.log("🔍 TOOL DISCOVERY");
                       console.log(`Query: ${message.query}`);
@@ -362,27 +369,6 @@ program
                         console.log("No tools matched");
                       }
                       console.log("─".repeat(70));
-                      break;
-
-                    case "tool_execution_started":
-                      console.log("\n" + "─".repeat(70));
-                      console.log("⚙️  TOOL EXECUTION");
-                      console.log(message.code);
-                      console.log("─".repeat(70));
-                      break;
-
-                    case "tool_execution_completed":
-                      if (message.error) {
-                        console.log("\n" + "─".repeat(70));
-                        console.log("⚙️  TOOL EXECUTION - ERROR");
-                        console.log("Error:", message.error);
-                        console.log("─".repeat(70));
-                      } else if (message.logs && message.logs.length > 0) {
-                        console.log("\n" + "─".repeat(70));
-                        console.log("⚙️  TOOL EXECUTION - LOGS");
-                        message.logs.forEach((log: string) => console.log(log));
-                        console.log("─".repeat(70));
-                      }
                       break;
 
                     case "code_execution_started":

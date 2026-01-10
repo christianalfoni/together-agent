@@ -543,27 +543,24 @@ Agent: Uses discover_tools("weather temperature forecast")
 Result: ["getWeather"]
 ```
 
-#### 2. `execute_tools`
-Executes JavaScript code with access to your custom tools.
+#### 2. `execute_code`
+Executes JavaScript code for both tool calling and general computation.
+
+**Use cases:**
+1. **Calling custom tools** - Execute code with access to discovered tools via the `tools` object
+2. **General computation** - Perform calculations, data manipulation, string processing, etc.
 
 ```javascript
-// Agent generates and executes:
+// For calling custom tools:
 const weather = await tools.getWeather({ location: "Paris" });
 console.log(weather);
-```
 
-The code is validated for safety (no `require()`, `import`, `eval()`, etc.) and executed in a sandboxed environment.
-
-#### 3. `execute_code`
-Executes arbitrary JavaScript for computation, data manipulation, etc.
-
-```javascript
-// For tasks like calculations:
+// For calculations and data manipulation:
 const result = Math.sqrt(144) * 2;
 console.log(result);
 ```
 
-No access to tools or external resources - only base JavaScript (Array, Object, Math, Date, etc.).
+The code is validated for safety (no `require()`, `import`, `eval()`, etc.) and executed in a sandboxed environment.
 
 ### Execution Flow
 
@@ -575,7 +572,7 @@ No access to tools or external resources - only base JavaScript (Array, Object, 
    → matches: ["getWeather"]
 
 3. Agent generates code
-   execute_tools(`
+   execute_code(`
      const weather = await tools.getWeather({ location: "Paris" });
      console.log(weather);
    `)

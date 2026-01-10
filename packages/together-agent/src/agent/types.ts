@@ -1,7 +1,5 @@
 export type AgentMessage =
-  | ToolDiscoveryCompletedMessage
-  | ToolExecutionStartedMessage
-  | ToolExecutionCompletedMessage
+  | DiscoverToolsMessage
   | CodeExecutionStartedMessage
   | CodeExecutionCompletedMessage
   | CustomToolCallStartedMessage
@@ -12,21 +10,10 @@ export type AgentMessage =
   | DoneMessage;
 
 // Native tool messages
-export interface ToolDiscoveryCompletedMessage {
-  type: "tool_discovery_completed";
+export interface DiscoverToolsMessage {
+  type: "discover_tools";
   query: string;
   matchedTools: string[];
-}
-
-export interface ToolExecutionStartedMessage {
-  type: "tool_execution_started";
-  code: string;
-}
-
-export interface ToolExecutionCompletedMessage {
-  type: "tool_execution_completed";
-  logs?: string[];
-  error?: string;
 }
 
 export interface CodeExecutionStartedMessage {
@@ -36,7 +23,7 @@ export interface CodeExecutionStartedMessage {
 
 export interface CodeExecutionCompletedMessage {
   type: "code_execution_completed";
-  logs?: string[];
+  result?: string;
   error?: string;
 }
 

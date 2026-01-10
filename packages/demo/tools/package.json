@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "googleapis": "^170.0.0",
+    "pdfkit": "^0.15.1",
     "zod": "^4.2.1"
   }
 }

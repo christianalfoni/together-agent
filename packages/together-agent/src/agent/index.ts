@@ -7,9 +7,6 @@ import * as path from 'path';
 const workspacePath = path.join(process.cwd(), 'workspace');
 if (!fs.existsSync(workspacePath)) {
   fs.mkdirSync(workspacePath, { recursive: true });
-  console.log(`Created workspace at: ${workspacePath}`);
-} else {
-  console.log(`Using existing workspace at: ${workspacePath}`);
 }
 
 // Export workspace path for use in routes
@@ -19,7 +16,12 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
+
+// Mount the main router at /prompt for prompt and approval endpoints
 app.use('/prompt', router);
+
+// Also mount at root to handle /files requests directly
+app.use('/', router);
 
 app.get('/health', (req, res) => {
   res.json({ status: 'healthy', timestamp: new Date().toISOString() });

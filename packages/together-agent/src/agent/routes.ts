@@ -2,6 +2,7 @@ import { Router } from "express";
 import { createTogetherAI } from "@ai-sdk/togetherai";
 import { streamText, stepCountIs, tool as aiSDKTool, CoreMessage } from "ai";
 import { createCodeTools } from "./tools";
+import { executeTools } from "./tools/execute_tools";
 import * as fs from "fs";
 import * as path from "path";
 import { pathToFileURL } from "url";
@@ -32,8 +33,6 @@ function ensureTogetherAgentShim(toolsPath: string): void {
     return;
   }
 
-  console.log("[SHIM] Creating together-agent shim package...");
-
   // Create directories
   fs.mkdirSync(togetherAgentPath, { recursive: true });
 
@@ -57,6 +56,7 @@ export function tool(toolDefinition) {
     return {
       discoveryTerms: toolDefinition.discoveryTerms,
       inputSchema: toolDefinition.inputSchema,
+      outputSchema: toolDefinition.outputSchema,
       execute: (input) => toolDefinition.execute(input, context),
     };
   };
@@ -64,18 +64,12 @@ export function tool(toolDefinition) {
 `;
 
   fs.writeFileSync(path.join(togetherAgentPath, "index.js"), indexJs);
-
-  console.log("[SHIM] ✓ together-agent shim created at:", togetherAgentPath);
 }
 
 async function loadTools(
   context: ToolExecutionContext
 ): Promise<Record<string, CustomToolDefinition>> {
   const toolsPath = process.env.TOOLS_PATH;
-
-  console.log("[DEBUG] loadTools called");
-  console.log("[DEBUG] TOOLS_PATH:", toolsPath);
-  console.log("[DEBUG] process.env keys:", Object.keys(process.env).join(", "));
 
   if (!toolsPath) {
     console.warn("No TOOLS_PATH specified, running without tools");
@@ -110,12 +104,13 @@ async function loadTools(
             toolDef &&
             toolDef.discoveryTerms &&
             toolDef.inputSchema &&
+            toolDef.outputSchema &&
             toolDef.execute
           ) {
             tools[fileName] = toolDef;
           } else {
             console.warn(
-              `Skipping default export in ${file}: missing required fields (discoveryTerms, inputSchema, execute)`
+              `Skipping default export in ${file}: missing required fields (discoveryTerms, inputSchema, outputSchema, execute)`
             );
           }
         }
@@ -133,12 +128,13 @@ async function loadTools(
             toolDef &&
             toolDef.discoveryTerms &&
             toolDef.inputSchema &&
+            toolDef.outputSchema &&
             toolDef.execute
           ) {
             tools[exportName] = toolDef;
           } else {
             console.warn(
-              `Skipping named export '${exportName}' in ${file}: missing required fields (discoveryTerms, inputSchema, execute)`
+              `Skipping named export '${exportName}' in ${file}: missing required fields (discoveryTerms, inputSchema, outputSchema, execute)`
             );
           }
         }
@@ -149,9 +145,6 @@ async function loadTools(
   } catch (err) {
     console.error("Failed to load tools:", err);
   }
-
-  console.log("[DEBUG] Loaded tools:", Object.keys(tools));
-  console.log("[DEBUG] Tool count:", Object.keys(tools).length);
 
   return tools;
 }
@@ -210,6 +203,7 @@ function wrapCustomToolWithMessages(
  */
 function wrapNativeToolsWithMessages(
   tools: Record<string, any>,
+  wrappedCustomTools: Record<string, any>,
   sendMessage: (message: AgentMessage) => void
 ) {
   return {
@@ -224,31 +218,9 @@ function wrapNativeToolsWithMessages(
 
         // Send discovery completion message
         sendMessage({
-          type: "tool_discovery_completed",
+          type: "discover_tools",
           query: params.query,
           matchedTools,
-        });
-
-        return result;
-      },
-    }),
-    execute_tools: aiSDKTool({
-      description: tools.execute_tools.description,
-      inputSchema: tools.execute_tools.inputSchema as any,
-      execute: async (params: { code: string }) => {
-        // Send started message with code BEFORE execution
-        sendMessage({
-          type: "tool_execution_started",
-          code: params.code,
-        });
-
-        const result = await tools.execute_tools.execute(params);
-
-        // Send completion message with logs AFTER execution
-        sendMessage({
-          type: "tool_execution_completed",
-          logs: result.logs,
-          error: result.error,
         });
 
         return result;
@@ -264,16 +236,21 @@ function wrapNativeToolsWithMessages(
           code: params.code,
         });
 
-        const result = await tools.execute_code.execute(params);
+        // Get raw execution result for message
+        const execution = await executeTools(params.code, wrappedCustomTools);
 
-        // Send completion message with logs AFTER execution
+        // Send completion message with result/error AFTER execution
         sendMessage({
           type: "code_execution_completed",
-          logs: result.logs,
-          error: result.error,
+          result: execution.result,
+          error: execution.error,
         });
 
-        return result;
+        // Format result for AI SDK (convert error to markdown if needed)
+        if (execution.error) {
+          return `## Error\n\n${execution.error}`;
+        }
+        return execution.result || "";
       },
     }),
   };
@@ -312,10 +289,13 @@ router.post("/approval", (req, res) => {
   }
 });
 
-router.get("/files/*", (req, res) => {
+router.get("/files/*filepath", (req, res) => {
   try {
     // Extract the file path from the URL (everything after /files/)
-    const requestedPath = req.params[0];
+    // filepath is an array when using wildcard routes
+    const requestedPath = Array.isArray(req.params.filepath)
+      ? req.params.filepath.join('/')
+      : req.params.filepath;
 
     if (!requestedPath) {
       return res.status(400).json({ error: "File path is required" });
@@ -381,7 +361,6 @@ router.get("/files/*", (req, res) => {
       }
     });
 
-    console.log("📥 SERVER: File download requested:", requestedPath);
   } catch (error) {
     console.error("Error in files endpoint:", error);
     if (!res.headersSent) {
@@ -472,22 +451,32 @@ router.post("/", async (req, res) => {
         role: "system",
         content: `You are a helpful AI assistant with access to various tools to help users accomplish their tasks.
 
-CRITICAL TOOL USAGE INSTRUCTIONS:
-- You have THREE native tools available: discover_tools, execute_tools, and execute_code
+CRITICAL: ALWAYS TRY TO DISCOVER TOOLS FIRST
+- When a user asks you to do something, your FIRST instinct should be to discover if there are tools available
+- Think broadly about what tools might exist: if the user mentions emails, files, data, APIs, documents, etc., there are likely tools for those
+- Don't try to answer or explain limitations - instead, discover tools and use them to accomplish the task
+- Custom tools are powerful and give you capabilities beyond general knowledge - USE THEM!
+
+TOOL USAGE INSTRUCTIONS:
+- You have TWO native tools available: discover_tools and execute_code
 - discover_tools: Use this DIRECTLY to find available custom tools based on a query
-- execute_tools: Use this to call custom tools you've discovered (like readEmails, sendEmail, etc.)
+  - Use broad search terms (e.g., "email", "file", "data", "document", "api")
+  - Search terms should match the domain of the user's request
+- execute_code: Use this for both:
+  1) Calling custom tools you've discovered (like readEmails, sendEmail, etc.)
+  2) General JavaScript computation, calculations, data manipulation, etc.
   - ALWAYS use 'await' when calling tools (e.g., 'await tools.sendEmail(...)')
   - Tools are asynchronous and need await to complete properly
   - This is especially important for tools that require user approval
-- execute_code: Use this for general JavaScript computation
 
-IMPORTANT: NEVER try to call discover_tools from within execute_tools or execute_code. These are separate tools you call directly.
+IMPORTANT: NEVER try to call discover_tools from within execute_code. These are separate tools you call directly.
 
 CORRECT TOOL USAGE:
 ✅ Call discover_tools directly when you need to find tools
-✅ Then call execute_tools with: await tools.toolName(...)
-❌ NEVER write code like: await tools.discover_tools() inside execute_tools
-❌ NEVER try to discover tools from within tool execution code
+✅ Then call execute_code with: await tools.toolName(...) for tool calls
+✅ Call execute_code with: Math.pow(2, 10) for calculations
+❌ NEVER write code like: await tools.discover_tools() inside execute_code
+❌ NEVER try to discover tools from within code execution
 ❌ NEVER forget 'await' when calling tools
 
 USER COMMUNICATION:
@@ -531,7 +520,7 @@ Be confident, natural, and focus on the user's intent rather than the technical 
     const codeTools = createCodeTools(wrappedCustomTools);
 
     // Wrap native tools to send completion messages and convert to AI SDK format
-    const wrappedNativeTools = wrapNativeToolsWithMessages(codeTools, queueMessage);
+    const wrappedNativeTools = wrapNativeToolsWithMessages(codeTools, wrappedCustomTools, queueMessage);
 
     const result = streamText({
       model: together("moonshotai/Kimi-K2-Instruct-0905"),

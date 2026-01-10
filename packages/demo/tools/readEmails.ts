@@ -5,30 +5,30 @@ import { z } from "zod";
 // Tool definition for reading Gmail emails
 export default tool({
   discoveryTerms: [
-    'email',
-    'mail',
-    'gmail',
-    'message',
-    'inbox',
-    'unread',
-    'read',
-    'list',
-    'query',
-    'search',
-    'messages',
-    'correspondence',
-    'letter',
-    'communication',
-    'retrieve',
-    'fetch',
-    'get',
-    'show',
-    'display',
-    'view',
-    'check',
-    'find',
-    'examine',
-    'review',
+    "email",
+    "mail",
+    "gmail",
+    "message",
+    "inbox",
+    "unread",
+    "read",
+    "list",
+    "query",
+    "search",
+    "messages",
+    "correspondence",
+    "letter",
+    "communication",
+    "retrieve",
+    "fetch",
+    "get",
+    "show",
+    "display",
+    "view",
+    "check",
+    "find",
+    "examine",
+    "review",
   ],
   inputSchema: z.object({
     query: z
@@ -43,6 +43,29 @@ export default tool({
       .max(50)
       .default(10)
       .describe("Maximum number of emails to return (1-50, default: 10)"),
+  }),
+  outputSchema: z.object({
+    success: z.boolean().describe("Whether the operation was successful"),
+    count: z.number().describe("Number of emails returned"),
+    query: z.string().optional().describe("The query that was used to search"),
+    emails: z
+      .array(
+        z.object({
+          id: z.string().optional().describe("Email message ID"),
+          threadId: z.string().optional().describe("Email thread ID"),
+          from: z.string().describe("Sender email address"),
+          to: z.string().describe("Recipient email address"),
+          subject: z.string().describe("Email subject"),
+          date: z.string().describe("Email date"),
+          snippet: z.string().optional().describe("Email preview snippet"),
+          body: z.string().describe("Email body content"),
+          labels: z
+            .array(z.string())
+            .describe("Gmail labels applied to this email"),
+        })
+      )
+      .describe("Array of email objects"),
+    message: z.string().optional().describe("Human-readable message"),
   }),
   execute: async (params, context) => {
     const { query = "is:unread", maxResults = 10 } = params;
@@ -131,13 +154,13 @@ export default tool({
           }
 
           return {
-            id: message.id,
-            threadId: details.data.threadId,
+            id: message.id || undefined,
+            threadId: details.data.threadId || undefined,
             from: getHeader("from"),
             to: getHeader("to"),
             subject: getHeader("subject"),
             date: getHeader("date"),
-            snippet: details.data.snippet,
+            snippet: details.data.snippet || undefined,
             body: body,
             labels: details.data.labelIds || [],
           };

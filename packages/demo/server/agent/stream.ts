@@ -1,5 +1,7 @@
 import { Router } from 'express'
 import type { Request } from 'express'
+import * as fs from 'fs'
+import * as path from 'path'
 
 export const agentRouter = Router()
 
@@ -170,5 +172,71 @@ agentRouter.post('/approval', requireAuth, async (req: AuthenticatedRequest, res
   } catch (error: any) {
     console.error('Approval error:', error)
     res.status(500).json({ error: error.message || 'Failed to handle approval' })
+  }
+})
+
+// GET /api/agent/files/* - Download files from agent workspace
+agentRouter.get('/files/*filepath', requireAuth, async (req: AuthenticatedRequest, res) => {
+  // Get the full file path from the wildcard (it comes as an array)
+  const filePath = Array.isArray(req.params.filepath)
+    ? req.params.filepath.join('/')
+    : req.params.filepath
+
+  if (!filePath) {
+    return res.status(400).json({ error: 'File path is required' })
+  }
+
+  if (!agentUrl) {
+    return res.status(503).json({ error: 'Agent is not initialized' })
+  }
+
+  try {
+    // Construct the agent's base URL (remove /prompt suffix if present)
+    const baseUrl = agentUrl.replace(/\/prompt\/?$/, '')
+
+    // Forward the file request to the agent
+    const fileUrl = `${baseUrl}/files/${encodeURIComponent(filePath)}`
+    console.log('Proxying file download to:', fileUrl)
+
+    const response = await fetch(fileUrl)
+
+    if (!response.ok) {
+      const text = await response.text()
+      throw new Error(`Agent file download failed: ${text}`)
+    }
+
+    // Forward relevant headers from the agent response
+    const contentType = response.headers.get('content-type')
+    const contentLength = response.headers.get('content-length')
+    const contentDisposition = response.headers.get('content-disposition')
+
+    if (contentType) res.setHeader('Content-Type', contentType)
+    if (contentLength) res.setHeader('Content-Length', contentLength)
+    if (contentDisposition) res.setHeader('Content-Disposition', contentDisposition)
+
+    // Stream the file from the agent to the client
+    if (!response.body) {
+      throw new Error('No response body from agent')
+    }
+
+    // Use the Web Streams API to pipe the response
+    const reader = response.body.getReader()
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        res.write(value)
+      }
+      res.end()
+    } catch (streamError) {
+      console.error('Stream error:', streamError)
+      throw streamError
+    }
+  } catch (error: any) {
+    console.error('File download proxy error:', error)
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message || 'Failed to download file' })
+    }
   }
 })

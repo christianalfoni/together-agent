@@ -1,5 +1,4 @@
 import { validateCode } from "./validate_code";
-import { createConsoleInterceptor } from "./console_interceptor";
 import { ensureToolCallsAreAwaited } from "./transform_code";
 
 // Default execution timeout in milliseconds (30 seconds)
@@ -10,18 +9,14 @@ export async function executeTools(code: string, tools: Record<string, any>) {
     // Transform code to ensure all tool calls are awaited
     const transformedCode = ensureToolCallsAreAwaited(code);
 
-    // Validate the code before execution
-    const validation = validateCode(transformedCode, ["tools", "console"]);
+    // Validate the code before execution (console is NOT allowed)
+    const validation = validateCode(transformedCode, ["tools"]);
     if (!validation.isValid) {
       return {
-        logs: [],
         result: undefined,
         error: `Code validation failed:\n${validation.errors.join("\n")}`,
       };
     }
-
-    // Create console interceptor
-    const { console: mockConsole, getLogs } = createConsoleInterceptor();
 
     // Wrap tools so they can be called directly as functions
     // IMPORTANT: We wrap in anonymous functions to prevent toString() from exposing implementation
@@ -39,18 +34,17 @@ export async function executeTools(code: string, tools: Record<string, any>) {
       wrappedTools[name].execute = wrapper;
     }
 
-    // Create the async function with tools and console in scope
+    // Create the async function with tools in scope
     const asyncFunc = new Function(
       "tools",
-      "console",
       `return (async () => {
 ${transformedCode}
       })();`
     );
 
-    // Execute with timeout protection
-    await Promise.race([
-      asyncFunc(wrappedTools, mockConsole),
+    // Execute with timeout protection and capture the return value
+    const result = await Promise.race([
+      asyncFunc(wrappedTools),
       new Promise((_, reject) =>
         setTimeout(
           () => reject(new Error(`Execution timeout: code took longer than ${EXECUTION_TIMEOUT_MS / 1000} seconds`)),
@@ -59,13 +53,12 @@ ${transformedCode}
       ),
     ]);
 
-    // Return logs and result
+    // Return the result (should be markdown string from the code)
     return {
-      logs: getLogs(),
+      result: result || "",
     };
   } catch (error: any) {
     return {
-      logs: [],
       result: undefined,
       error: error.message,
     };

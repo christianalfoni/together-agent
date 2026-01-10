@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { Message, AgentMessage } from './Message'
 import { ApprovalDialog, ApprovalRequest } from './ApprovalDialog'
+import { PDFList, PDFItem } from './PDFList'
 import { useAgentStream } from '../hooks/useAgentStream'
 
 interface ChatMessage {
@@ -15,7 +16,7 @@ export function Chat() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [approvalRequest, setApprovalRequest] = useState<ApprovalRequest | null>(null)
-  const [isDiscovering, setIsDiscovering] = useState(false)
+  const [pdfs, setPdfs] = useState<PDFItem[]>([])
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
@@ -55,13 +56,43 @@ export function Chat() {
         // Log all messages to console
         console.log('Received message:', agentMessage.type, agentMessage)
 
-        // Filter out native tool execution messages and discovery
+        // Track PDF generation
+        if (agentMessage.type === 'custom_tool_call_started' && agentMessage.toolName === 'generatePDF') {
+          // Extract filename from payload
+          const params = agentMessage.payload
+          const filename = params?.filename || 'document.pdf'
+          const pdfFilename = filename.endsWith('.pdf') ? filename : `${filename}.pdf`
+
+          setPdfs((prev) => [
+            ...prev,
+            {
+              id: agentMessage.callId!,
+              filename: pdfFilename,
+              status: 'generating',
+            },
+          ])
+        }
+
+        if (agentMessage.type === 'custom_tool_call_completed' && agentMessage.toolName === 'generatePDF') {
+          setPdfs((prev) =>
+            prev.map((pdf) =>
+              pdf.id === agentMessage.callId
+                ? {
+                    ...pdf,
+                    status: agentMessage.result?.success ? 'completed' : 'error',
+                    filePath: agentMessage.result?.filePath,
+                    size: agentMessage.result?.size,
+                    error: agentMessage.result?.success ? undefined : agentMessage.result?.message,
+                  }
+                : pdf
+            )
+          )
+        }
+
+        // Filter out discovery and done messages
         const filteredTypes = [
-          'tool_execution_started',
-          'tool_execution_completed',
-          'code_execution_started',
-          'code_execution_completed',
-          'tool_discovery_completed',
+          'discover_tools',
+          'done',
         ]
 
         if (filteredTypes.includes(agentMessage.type)) {
@@ -90,8 +121,54 @@ export function Chat() {
             ]
           }
 
-          // For custom_tool_call_started, add with callId as the message id
+          // For code_execution_started, create a new message with executionId
+          if (agentMessage.type === 'code_execution_started') {
+            return [
+              ...prev,
+              {
+                id: `execution-${agentMessage.executionId}`,
+                type: 'agent' as const,
+                content: '',
+                agentMessage: {
+                  ...agentMessage,
+                  toolCalls: [],
+                  code: agentMessage.code,
+                },
+                timestamp: new Date(),
+              },
+            ]
+          }
+
+          // For custom_tool_call_started, add it to the current code execution
           if (agentMessage.type === 'custom_tool_call_started') {
+            // Find the most recent code execution message
+            const executionIndex = [...prev].reverse().findIndex(
+              (msg) => msg.agentMessage?.type === 'code_execution_started'
+            )
+
+            if (executionIndex !== -1) {
+              const actualIndex = prev.length - 1 - executionIndex
+              return prev.map((msg, idx) =>
+                idx === actualIndex
+                  ? {
+                      ...msg,
+                      agentMessage: {
+                        ...msg.agentMessage!,
+                        toolCalls: [
+                          ...(msg.agentMessage!.toolCalls || []),
+                          {
+                            callId: agentMessage.callId!,
+                            toolName: agentMessage.toolName!,
+                            status: 'running' as const,
+                          },
+                        ],
+                      },
+                    }
+                  : msg
+              )
+            }
+
+            // Fallback: no code execution found, show as standalone
             return [
               ...prev,
               {
@@ -104,13 +181,58 @@ export function Chat() {
             ]
           }
 
-          // For custom_tool_call_completed, update the existing message in place
+          // For custom_tool_call_completed, update the tool call within code execution
           if (agentMessage.type === 'custom_tool_call_completed') {
+            // Find the most recent code execution message
+            const executionIndex = [...prev].reverse().findIndex(
+              (msg) => msg.agentMessage?.type === 'code_execution_started'
+            )
+
+            if (executionIndex !== -1) {
+              const actualIndex = prev.length - 1 - executionIndex
+              return prev.map((msg, idx) =>
+                idx === actualIndex
+                  ? {
+                      ...msg,
+                      agentMessage: {
+                        ...msg.agentMessage!,
+                        toolCalls: msg.agentMessage!.toolCalls?.map((tc) =>
+                          tc.callId === agentMessage.callId
+                            ? {
+                                ...tc,
+                                status: 'completed' as const,
+                                result: agentMessage.result,
+                              }
+                            : tc
+                        ),
+                      },
+                    }
+                  : msg
+              )
+            }
+
+            // Fallback: update standalone tool message
             return prev.map((msg) =>
               msg.id === `tool-${agentMessage.callId}`
                 ? {
                     ...msg,
                     agentMessage: agentMessage,
+                  }
+                : msg
+            )
+          }
+
+          // For code_execution_completed, update the code execution message
+          if (agentMessage.type === 'code_execution_completed') {
+            return prev.map((msg) =>
+              msg.id === `execution-${agentMessage.executionId}`
+                ? {
+                    ...msg,
+                    agentMessage: {
+                      ...msg.agentMessage!,
+                      type: 'code_execution_completed',
+                      code: msg.agentMessage!.code || agentMessage.code,
+                    },
                   }
                 : msg
             )
@@ -193,6 +315,11 @@ export function Chat() {
 
       {/* Input area */}
       <div className="border-t border-gray-200 p-4 bg-white">
+        {pdfs.length > 0 && (
+          <div className="mb-3">
+            <PDFList pdfs={pdfs} />
+          </div>
+        )}
         <form onSubmit={handleSendMessage} className="flex gap-3">
           <textarea
             ref={inputRef}

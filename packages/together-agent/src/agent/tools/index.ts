@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { discoverToolsInMemory } from "./discover_tools";
 import { executeTools } from "./execute_tools";
-import { executeCode } from "./execute_code";
 import { CustomToolDefinition } from "../../index";
 
 export function createCodeTools(tools: Record<string, CustomToolDefinition>) {
@@ -20,66 +19,22 @@ export function createCodeTools(tools: Record<string, CustomToolDefinition>) {
         return discoverToolsInMemory(query, tools);
       },
     },
-    execute_tools: {
+    execute_code: {
       description:
-        "Execute JavaScript code with access to asynchronous tools via the 'tools' object. You can use console.log() to debug, see intermediate values and log results. When calling multiple tools, use Promise.all() to execute them in parallel whenever possible. CRITICAL: Always use 'await' when calling tools - do NOT use .then()/.catch() without re-throwing errors. If a tool call fails, the error must propagate so you can see it and respond appropriately. IMPORTANT: Only use this tool to call the available tools and log their results using console.log(). Do NOT attempt to access system resources, import modules, or execute any code outside of calling the provided tools. The code will be validated and execution will fail if it attempts to use require(), import, eval(), access process/global objects, or any other potentially dangerous operations. IMPORTANT! This is a private tool, do not reference its existence with the user",
+        "Execute JavaScript code with access to asynchronous tools via the 'tools' object. Use this tool for: 1) Calling custom tools that you've discovered (e.g., sendEmail, readFiles, etc.), 2) General computational tasks, data structure manipulation, mathematical operations, string processing, time evaluation, etc. CRITICAL: Your code MUST return a markdown string that presents the results in a user-friendly format. Do NOT use console.log() - instead, build up a markdown string and return it at the end of your code. IMPORTANT: Use the outputSchema from discovered tools to understand what data structure each tool returns - this allows you to efficiently compose multiple tool calls and generate well-structured results. For example, if a tool returns {success: boolean, data: array}, you can directly access result.data in your code. When calling multiple tools, use Promise.all() to execute them in parallel whenever possible. CRITICAL: Always use 'await' when calling tools - do NOT use .then()/.catch() without re-throwing errors. If a tool call fails, the error must propagate so you can see it and respond appropriately. IMPORTANT: Each code execution is isolated - variables, functions, and state do not persist between executions. IMPORTANT: The code will be validated and execution will fail if it attempts to use require(), import, eval(), access process/global objects, console methods, or any other potentially dangerous operations. IMPORTANT! This is a private tool, do not reference its existence with the user",
       inputSchema: z.object({
-        code: z.string().describe("The JavaScript code to execute"),
+        code: z.string().describe("The JavaScript code to execute. Must return a markdown string."),
       }),
       execute: async ({ code }: { code: string }) => {
         const execution = await executeTools(code, tools);
 
-        // Format the result for the LLM
-        const parts: string[] = [];
-
+        // If there's an error, format it as markdown
         if (execution.error) {
-          parts.push(`Error: ${execution.error}`);
+          return `## Error\n\n${execution.error}`;
         }
 
-        if (execution.logs && execution.logs.length > 0) {
-          parts.push(`Console output:\n${execution.logs.join("\n")}`);
-        }
-
-        if (execution.result !== undefined) {
-          const resultStr =
-            typeof execution.result === "object"
-              ? JSON.stringify(execution.result, null, 2)
-              : String(execution.result);
-          parts.push(`Result:\n${resultStr}`);
-        }
-
-        return parts.join("\n\n");
-      },
-    },
-    execute_code: {
-      description:
-        "Execute arbitrary JavaScript code. Use this for computational tasks, data structure manipulation, mathematical operations, string processing, time evaluation etc. You can use console.log() to debug, see intermediate values and log results. IMPORTANT: This tool CANNOT access tools or external resources. It only has access to base JavaScript (Array, Object, String, Number, Math, Date, Map, Set, etc.). No imports, no require, no access to process/global objects. IMPORTANT! This is a private tool, do not reference its existence with the user",
-      inputSchema: z.object({
-        code: z.string().describe("The JavaScript code to execute"),
-      }),
-      execute: async ({ code }: { code: string }) => {
-        const execution = await executeCode(code);
-
-        // Format the result for the LLM
-        const parts: string[] = [];
-
-        if (execution.error) {
-          parts.push(`Error: ${execution.error}`);
-        }
-
-        if (execution.logs && execution.logs.length > 0) {
-          parts.push(`Console output:\n${execution.logs.join("\n")}`);
-        }
-
-        if (execution.result !== undefined) {
-          const resultStr =
-            typeof execution.result === "object"
-              ? JSON.stringify(execution.result, null, 2)
-              : String(execution.result);
-          parts.push(`Result:\n${resultStr}`);
-        }
-
-        return parts.join("\n\n");
+        // Return the result (which should be markdown from the code)
+        return execution.result || "";
       },
     },
   };
