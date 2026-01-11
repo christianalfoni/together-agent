@@ -6,7 +6,13 @@ import { executeTools } from "./tools/execute_tools";
 import * as fs from "fs";
 import * as path from "path";
 import { pathToFileURL } from "url";
-import { AgentMessage, ToolExecutionContext, ApprovalResponse } from "./types";
+import {
+  AgentMessage,
+  ToolExecutionContext,
+  ApprovalResponse,
+  SessionState,
+  JournalConfig,
+} from "./types";
 import {
   generateApprovalId,
   createApprovalRequest,
@@ -14,13 +20,24 @@ import {
 } from "./approval";
 import { CustomToolDefinition } from "../index";
 import { workspacePath } from "./index";
+import { shouldCompress, performCompression } from "./journal";
+import {
+  createReadJournalEntriesTool,
+  createAddJournalEntryTool,
+} from "./tools/journal_tools";
 
 export const router = Router();
 
-// Agent instance conversation state
-let messages: CoreMessage[] = [];
-// Track tools that have been discovered in this session (for deduplication)
-let discoveredTools: Set<string> = new Set();
+// Agent instance conversation state - will be replaced with per-request SessionState
+// Kept for backward compatibility with existing code paths
+let sessionState: SessionState = {
+  messages: [],
+  journalEntries: [],
+  messageToJournals: new Map(),
+  lastUserOrAssistantMessage: null,
+  lastPromptTokens: 0,
+  discoveredTools: new Map(),
+};
 
 /**
  * Creates a minimal together-agent shim package in node_modules if it doesn't exist.
@@ -160,7 +177,9 @@ function wrapCustomToolWithMessages(
     ...toolDef,
     execute: async (params: any) => {
       // Generate a unique call ID for this execution
-      const callId = `${toolName}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const callId = `${toolName}-${Date.now()}-${Math.random()
+        .toString(36)
+        .slice(2)}`;
 
       // Send custom tool started message
       sendMessage({
@@ -183,7 +202,8 @@ function wrapCustomToolWithMessages(
 
         return result;
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
 
         // Send custom tool completed message with error
         sendMessage({
@@ -206,72 +226,252 @@ function wrapCustomToolWithMessages(
 function wrapNativeToolsWithMessages(
   tools: Record<string, any>,
   wrappedCustomTools: Record<string, any>,
-  sendMessage: (message: AgentMessage) => void
+  sendMessage: (message: AgentMessage) => void,
+  state: SessionState
 ) {
   return {
-    discover_tools: aiSDKTool({
-      description: tools.discover_tools.description,
-      inputSchema: tools.discover_tools.inputSchema as any,
-      execute: async (params: { query: string }) => {
-        const result = await tools.discover_tools.execute(params);
+    execute_code_tools_discovery: aiSDKTool({
+      description: tools.execute_code_tools_discovery.description,
+      inputSchema: tools.execute_code_tools_discovery.inputSchema as any,
+      execute: async (params: { terms: string }) => {
+        const result = await tools.execute_code_tools_discovery.execute(params);
 
-        // Filter out tools that have already been discovered in this session
-        const newTools = result.tools?.filter((t: any) => !discoveredTools.has(t.name)) || [];
-
-        // Add newly discovered tools to the set
-        newTools.forEach((t: any) => discoveredTools.add(t.name));
-
-        // Extract tool names for the message (including all matched tools, not just new ones)
+        // Extract tool names for the message
         const allMatchedTools = result.tools?.map((t: any) => t.name) || [];
+
+        // Store discovered tools in session state
+        // These will be included in the system prompt on the next turn, making them
+        // permanently visible to the LLM without needing to re-discover them.
+        // This is more efficient than re-discovering and ensures the LLM always knows
+        // what tools are available and what data structures they return (outputSchema).
+        for (const tool of result.tools || []) {
+          if (!state.discoveredTools.has(tool.name)) {
+            state.discoveredTools.set(tool.name, {
+              name: tool.name,
+              inputSchema: tool.inputSchema,
+              outputSchema: tool.outputSchema,
+            });
+          }
+        }
 
         // Send discovery completion message
         sendMessage({
-          type: "discover_tools",
-          query: params.query,
+          type: "execute_code_tools_discovery",
+          terms: params.terms,
           matchedTools: allMatchedTools,
         });
 
         // IMPORTANT: Convert to JSON string to avoid AI SDK validation issues
         // The AI SDK stores tool results in message history, and complex nested objects
         // with schemas cause validation failures. By stringifying, we ensure clean serialization.
-        return JSON.stringify({ tools: newTools }, null, 2);
+        // Return all matched tools (no deduplication - rely on context compression instead)
+        return JSON.stringify({ tools: result.tools || [] }, null, 2);
       },
     }),
     execute_code: aiSDKTool({
       description: tools.execute_code.description,
       inputSchema: tools.execute_code.inputSchema as any,
       execute: async (params: { code: string }) => {
+        // Generate unique execution ID
+        const executionId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+
         // Send started message with code BEFORE execution
         sendMessage({
           type: "code_execution_started",
           code: params.code,
+          executionId,
         });
 
-        // Get raw execution result for message
-        const execution = await executeTools(params.code, wrappedCustomTools);
+        // Call the original execute_code tool which has appendJournalEntry
+        const result = await tools.execute_code.execute(params);
+
+        // Parse the JSON result to check for errors
+        let parsedResult;
+        let errorMessage;
+        try {
+          parsedResult = JSON.parse(result);
+          errorMessage = parsedResult.error;
+        } catch (e) {
+          // If parsing fails, treat the whole result as an error
+          errorMessage = "Failed to parse execute_code result";
+        }
 
         // Send completion message with result/error AFTER execution
         sendMessage({
           type: "code_execution_completed",
-          result: execution.result,
-          error: execution.error,
+          result: result,
+          error: errorMessage,
+          executionId,
         });
 
-        // Format result for AI SDK (convert error to markdown if needed)
-        if (execution.error) {
-          return `## Error\n\n${execution.error}`;
-        }
-        return execution.result || "";
+        return result;
       },
     }),
   };
 }
 
+/**
+ * Generates the system prompt with discovered tools included
+ *
+ * DESIGN DECISION: Why System Prompt Instead of Formal Tools Array?
+ *
+ * Problem: The LLM struggles to "remember" dynamically discovered tools when they only
+ * exist in conversation history. In long conversations or with context compression,
+ * the LLM may forget about available tools.
+ *
+ * Why not use the formal Claude API tools array?
+ * - The formal tools array only supports: name, description, input_schema
+ * - Our tools ALSO have outputSchema, which is critical for the LLM to know what data
+ *   structure it will receive when calling tools via execute_code
+ * - The LLM needs outputSchema to compose correct code that handles tool results
+ *
+ * Why system prompt?
+ * - Keeps full tool definitions (including outputSchema) always visible to the LLM
+ * - Discovery happens mostly at conversation start (user comes in with a goal)
+ * - System prompt updates are cheap since they happen at the start of each turn
+ * - The LLM can reference tool schemas without re-discovering them
+ * - Works well with prompt caching after initial discovery
+ */
+function generateSystemPrompt(discoveredTools: Map<string, any>): string {
+  const basePrompt = `You are a helpful AI assistant. You are friendly and focused on the user goals.
+
+## Your Primary Capability: Code Execution
+
+**You solve tasks by executing code with access to specialized code tools.**
+
+For EVERY user request, follow this workflow:
+1. **Discover**: Use execute_code_tools_discovery to find relevant code tools for the task
+2. **Execute**: Use execute_code to call the discovered tools via codeTools object
+3. **Respond**: Format the results naturally for the user
+
+**CRITICAL: NEVER say you can't do something without first discovering tools**
+- Before declining a request, use execute_code_tools_discovery with relevant terms
+- Only if NO relevant tools are found should you explain you cannot help
+- Examples of discovery terms: "email", "weather", "file", "database", "api", "pdf", etc.
+
+## Core Agent Loop
+
+Your primary workflow for EVERY user request:
+1. **Discover**: If tools not already discovered, use execute_code_tools_discovery with relevant search terms
+2. **Analyze**: Check what code tools are available in your context
+3. **Compose**: Plan ALL tool calls needed to complete the task
+4. **Execute**: Call execute_code ONCE with ALL tool calls composed together
+5. **Respond**: Format the results naturally for the user
+
+**CRITICAL: Compose tool calls together in a SINGLE execute_code call**
+- DO NOT make multiple separate execute_code calls
+- Plan the entire solution and execute it in one go
+- Use Promise.all() for parallel operations
+- Chain operations when one depends on another
+- This minimizes round trips and is more efficient
+
+## Tool Usage Guidelines
+
+**IMPORTANT - Internal Tool Mechanics:**
+- NEVER mention tool names (execute_code_tools_discovery, execute_code, etc.) in your responses to users
+- NEVER say "I'm calling the X tool" or "Let me use the Y tool"
+- NEVER explain that you're discovering or executing code tools
+- Tool usage is INTERNAL BEHAVIOR - users should only see natural responses
+- Just perform actions and present results naturally without exposing implementation details
+
+**execute_code Returns JSON:**
+- execute_code returns structured JSON data (not formatted text)
+- YOU format the data in your response to the user
+- Extract the specific fields from the JSON and present them clearly
+- The user does NOT see the raw JSON - only your formatted response
+
+**Efficiency First:**
+- ALWAYS check recent conversation history for data before making tool calls
+- DO NOT re-fetch data that was already retrieved in recent messages
+- Use tool results from previous turns when answering follow-up questions
+
+**Journal Entries:**
+- Journal entries are for LONG-TERM reference (data from many turns ago or when context is compressed)
+- DO NOT read journal entries for data from the last few turns - it's already in your conversation history
+- Only use read_journal_entries when you need information from much earlier in the conversation
+
+**Code Tool Discovery:**
+- For ANY new task domain, FIRST use execute_code_tools_discovery to find relevant tools
+- Use execute_code_tools_discovery ONCE per tool domain (e.g., once for "weather", once for "email")
+- After discovering code tools, you can use them in execute_code via codeTools object without re-discovering
+- Think broadly about discovery terms - if user asks about anything, try discovering tools for it
+
+**Discovery Decision Tree:**
+1. Is this a task I can solve? → Try discovering tools first
+2. Have I already discovered tools for this domain? → Use them directly in execute_code
+3. Are there no tools discovered yet? → Use execute_code_tools_discovery with relevant search terms
+4. Did discovery return no tools? → Only then explain I cannot help with this task
+
+## Example Conversations
+
+**Example 1: New Request - Discover Tools First**
+User: What's the weather in Trondheim and Oslo?
+Assistant: [First discovers weather code tools with execute_code_tools_discovery("weather")]
+Assistant: [Then executes code with BOTH calls composed:]
+\`\`\`javascript
+const [trondheim, oslo] = await Promise.all([
+  codeTools.getWeather({ city: "Trondheim" }),
+  codeTools.getWeather({ city: "Oslo" })
+])
+await codeTools.addJournalEntry('Weather Query', 'Fetched weather for Trondheim and Oslo')
+return { trondheim, oslo }
+\`\`\`
+Assistant: The weather in Trondheim is 8°C and partly cloudy, while Oslo is 10°C and sunny.
+
+**Example 2: Chaining Operations**
+User: Send the weather report for Trondheim to john@example.com
+Assistant: [discovers weather and email code tools, then composes:]
+\`\`\`javascript
+const weather = await codeTools.getWeather({ city: "Trondheim" })
+const emailResult = await codeTools.sendEmail({
+  to: "john@example.com",
+  subject: "Weather Report",
+  body: \`Temperature: \${weather.temp}°C, Condition: \${weather.condition}\`
+})
+await codeTools.addJournalEntry('Email Task', 'Sent weather report to john@example.com')
+return { weather, emailResult }
+\`\`\`
+Assistant: I've sent the weather report for Trondheim (8°C, partly cloudy) to john@example.com.
+
+**Example 3: Using Previous Data**
+User: Compare them
+Assistant: [uses data from previous messages - NO need to fetch again]
+Assistant: Trondheim is cooler at 8°C vs Oslo at 10°C. Trondheim is cloudier with higher humidity (72% vs 65%).
+
+**Example 4: Unknown Request - Discover First, Don't Refuse**
+User: Can you generate a PDF report?
+Assistant: [CORRECT: discovers tools first with execute_code_tools_discovery("pdf generate document")]
+Assistant: [If tools found] I'll generate that PDF report for you.
+Assistant: [If NO tools found] I don't have access to PDF generation tools at the moment.
+
+**REMEMBER:**
+- ALWAYS discover tools before saying you can't do something
+- Your primary capability is executing code with discovered tools
+- Compose multiple code tool calls together in a single execute_code
+- Be proactive - try discovering tools for any reasonable user request
+`;
+
+  // Add discovered code tools section
+  let toolsSection = "\n## Discovered Code Tools (for use in execute_code)\n\n";
+
+  if (discoveredTools.size === 0) {
+    toolsSection += "No code tools have been discovered yet. Use execute_code_tools_discovery to find code tools available for execute_code.\n";
+  } else {
+    toolsSection += "The following code tools have been discovered and are available for use in execute_code via codeTools:\n\n";
+
+    for (const [name, tool] of discoveredTools.entries()) {
+      toolsSection += `### ${name}\n\n`;
+      toolsSection += `**Input Schema:**\n\`\`\`json\n${JSON.stringify(tool.inputSchema, null, 2)}\n\`\`\`\n\n`;
+      toolsSection += `**Output Schema:**\n\`\`\`json\n${JSON.stringify(tool.outputSchema, null, 2)}\n\`\`\`\n\n`;
+    }
+  }
+
+  return basePrompt + toolsSection;
+}
+
 router.post("/approval", (req, res) => {
   try {
     const response: ApprovalResponse = req.body;
-
-    console.log("📨 SERVER: Received approval response", response);
 
     if (!response.approvalId) {
       return res.status(400).json({ error: "approvalId is required" });
@@ -284,13 +484,11 @@ router.post("/approval", (req, res) => {
     const resolved = resolveApproval(response);
 
     if (!resolved) {
-      console.log("❌ SERVER: Approval request not found or already resolved");
       return res.status(404).json({
         error: "Approval request not found or already resolved",
       });
     }
 
-    console.log("✅ SERVER: Approval resolved successfully");
     res.json({ success: true });
   } catch (error) {
     console.error("Error in approval endpoint:", error);
@@ -305,7 +503,7 @@ router.get("/files/*filepath", (req, res) => {
     // Extract the file path from the URL (everything after /files/)
     // filepath is an array when using wildcard routes
     const requestedPath = Array.isArray(req.params.filepath)
-      ? req.params.filepath.join('/')
+      ? req.params.filepath.join("/")
       : req.params.filepath;
 
     if (!requestedPath) {
@@ -318,7 +516,6 @@ router.get("/files/*filepath", (req, res) => {
     // Security: Prevent path traversal attacks
     const normalizedPath = path.normalize(filePath);
     if (!normalizedPath.startsWith(workspacePath)) {
-      console.log("🚫 SERVER: Path traversal attempt blocked:", requestedPath);
       return res.status(403).json({ error: "Access denied" });
     }
 
@@ -371,7 +568,6 @@ router.get("/files/*filepath", (req, res) => {
         res.status(500).json({ error: "Error reading file" });
       }
     });
-
   } catch (error) {
     console.error("Error in files endpoint:", error);
     if (!res.headersSent) {
@@ -383,7 +579,13 @@ router.get("/files/*filepath", (req, res) => {
 });
 
 router.post("/", async (req, res) => {
-  const { prompt, apiKey, secrets = {}, approvalTimeout = 30000 } = req.body;
+  const {
+    prompt,
+    apiKey,
+    secrets = {},
+    approvalTimeout = 30000,
+    journalConfig,
+  } = req.body;
 
   if (!prompt) {
     return res.status(400).json({ error: "Prompt is required" });
@@ -398,6 +600,11 @@ router.post("/", async (req, res) => {
       error: "approvalTimeout must be a positive number",
     });
   }
+
+  // Parse journal configuration
+  const config: JournalConfig = {
+    contextSizeThreshold: journalConfig?.contextSizeThreshold ?? 50000,
+  };
 
   // Set SSE headers
   res.setHeader("Content-Type", "text/event-stream");
@@ -433,8 +640,6 @@ router.post("/", async (req, res) => {
     const approvalId = generateApprovalId();
     const timeout = timeoutMs || approvalTimeout;
 
-    console.log("🚨 SERVER: Creating approval request", approvalId, payload);
-
     // Send approval request message immediately (bypass queue)
     sendMessageNow({
       type: "approval_request",
@@ -442,10 +647,8 @@ router.post("/", async (req, res) => {
       payload,
     });
 
-    console.log("🚨 SERVER: Waiting for approval response...");
     // Wait for approval response (throws if rejected or timed out)
     await createApprovalRequest(approvalId, timeout);
-    console.log("✅ SERVER: Approval received, continuing execution");
   };
 
   // Create context object for tools
@@ -456,55 +659,26 @@ router.post("/", async (req, res) => {
   };
 
   try {
-    // Add system message if this is the first message in the conversation
-    if (messages.length === 0) {
+    // Update or add system message with current discovered tools
+    // We regenerate the system prompt on EVERY turn to include any newly discovered tools.
+    // This ensures the LLM always has access to the full set of discovered tools with their
+    // complete schemas (including outputSchema, which the formal tools array doesn't support).
+    // Since tool discovery happens mostly at conversation start, this is efficient and avoids
+    // the need for the LLM to re-discover tools it has already found.
+    const systemPromptContent = generateSystemPrompt(sessionState.discoveredTools);
+
+    if (sessionState.messages.length === 0) {
+      // First message - add system message
       const systemMessage: CoreMessage = {
         role: "system",
-        content: `You are a helpful AI assistant with access to various tools to help users accomplish their tasks.
-
-CRITICAL: ALWAYS TRY TO DISCOVER TOOLS FIRST
-- When a user asks you to do something, your FIRST instinct should be to discover if there are tools available
-- Think broadly about what tools might exist: if the user mentions emails, files, data, APIs, documents, etc., there are likely tools for those
-- Don't try to answer or explain limitations - instead, discover tools and use them to accomplish the task
-- Custom tools are powerful and give you capabilities beyond general knowledge - USE THEM!
-
-TOOL USAGE INSTRUCTIONS:
-- You have TWO native tools available: discover_tools and execute_code
-- discover_tools: Use this DIRECTLY to find available custom tools based on a query
-  - Use broad search terms (e.g., "email", "file", "data", "document", "api")
-  - Search terms should match the domain of the user's request
-- execute_code: Use this for both:
-  1) Calling custom tools you've discovered (like readEmails, sendEmail, etc.)
-  2) General JavaScript computation, calculations, data manipulation, etc.
-  - ALWAYS use 'await' when calling tools (e.g., 'await tools.sendEmail(...)')
-  - Tools are asynchronous and need await to complete properly
-  - This is especially important for tools that require user approval
-
-IMPORTANT: NEVER try to call discover_tools from within execute_code. These are separate tools you call directly.
-
-CORRECT TOOL USAGE:
-✅ Call discover_tools directly when you need to find tools
-✅ Then call execute_code with: await tools.toolName(...) for tool calls
-✅ Call execute_code with: Math.pow(2, 10) for calculations
-❌ NEVER write code like: await tools.discover_tools() inside execute_code
-❌ NEVER try to discover tools from within code execution
-❌ NEVER forget 'await' when calling tools
-
-USER COMMUNICATION:
-- NEVER mention or expose the internal tool discovery mechanism to users
-- NEVER say things like "Let me discover a tool" or "I'll search for available tools"
-- Instead, be natural and direct about what you're going to do
-
-EXAMPLES:
-❌ "Let me see if I can discover a tool to help with that"
-✅ "Let me help you with that"
-
-❌ "Great! I found a readEmails tool. Let me use it now."
-✅ "Let me check your emails for you"
-
-Be confident, natural, and focus on the user's intent rather than the technical process.`,
+        content: systemPromptContent,
       };
-      messages.push(systemMessage);
+      sessionState.messages.push(systemMessage);
+    } else {
+      // Update existing system message with current discovered tools
+      if (sessionState.messages[0]?.role === "system") {
+        sessionState.messages[0].content = systemPromptContent;
+      }
     }
 
     // Add user message to conversation history
@@ -512,7 +686,9 @@ Be confident, natural, and focus on the user's intent rather than the technical 
       role: "user",
       content: prompt,
     };
-    messages.push(userMessage);
+    sessionState.messages.push(userMessage);
+    // Track this as the last user/assistant message for journal attachment
+    sessionState.lastUserOrAssistantMessage = userMessage;
 
     const together = createTogetherAI({ apiKey });
     const customTools = await loadTools(context);
@@ -527,20 +703,93 @@ Be confident, natural, and focus on the user's intent rather than the technical 
       );
     }
 
-    // Create code tools (native tools) with wrapped custom tools
-    const codeTools = createCodeTools(wrappedCustomTools);
+    // Create journal tools
+    const readJournalEntriesTool = createReadJournalEntriesTool(
+      workspacePath,
+      queueMessage
+    );
+    const addJournalEntry = createAddJournalEntryTool(
+      sessionState,
+      config,
+      workspacePath,
+      queueMessage
+    );
+
+    // Create code tools (native tools) with wrapped custom tools and addJournalEntry
+    const codeTools = createCodeTools(wrappedCustomTools, addJournalEntry);
 
     // Wrap native tools to send completion messages and convert to AI SDK format
-    const wrappedNativeTools = wrapNativeToolsWithMessages(codeTools, wrappedCustomTools, queueMessage);
+    const wrappedNativeTools = {
+      ...wrapNativeToolsWithMessages(
+        codeTools,
+        wrappedCustomTools,
+        queueMessage,
+        sessionState
+      ),
+      read_journal_entries: aiSDKTool({
+        description: readJournalEntriesTool.description,
+        inputSchema: readJournalEntriesTool.inputSchema as any,
+        execute: readJournalEntriesTool.execute,
+      }),
+    };
 
-    const result = streamText({
-      model: together("moonshotai/Kimi-K2-Instruct-0905"),
-      messages,
-      tools: wrappedNativeTools,
-      stopWhen: stepCountIs(20),
+    // Filter out execute_code_tools_discovery and execute_code requests (keep only results)
+    const filterInternalToolCalls = (messages: CoreMessage[]): CoreMessage[] => {
+      return messages.map((message) => {
+        // Only filter assistant messages with content arrays
+        if (message.role !== "assistant" || typeof message.content === "string") {
+          return message;
+        }
+
+        if (!Array.isArray(message.content)) {
+          return message;
+        }
+
+        // Filter out tool-call content for execute_code_tools_discovery and execute_code
+        const filteredContent = message.content.filter((part: any) => {
+          if (part.type === "tool-call") {
+            const toolName = part.toolName;
+            // Filter out internal tool calls
+            return toolName !== "execute_code_tools_discovery" && toolName !== "execute_code";
+          }
+          // Keep all other content (text, tool-result, etc.)
+          return true;
+        });
+
+        // Return message with filtered content
+        return {
+          ...message,
+          content: filteredContent,
+        };
+      });
+    };
+
+    // Filter messages before sending to LLM
+    const filteredMessages = filterInternalToolCalls(sessionState.messages);
+
+    // Validate and clean messages
+    const cleanedMessages = filteredMessages.map((msg: any) => {
+      // Ensure content is never undefined
+      if (msg.content === undefined || msg.content === null) {
+        return { ...msg, content: "" };
+      }
+      return msg;
     });
 
-    // Use fullStream to get events in the correct order
+    // Capture the messages we're sending to the model (before they get updated with the response)
+    const messagesBeingsent = JSON.parse(JSON.stringify(cleanedMessages)); // deep clone
+
+    const result = streamText({
+      // model: together("moonshotai/Kimi-K2-Thinking"),
+      model: together("moonshotai/Kimi-K2-Instruct-0905"),
+      messages: cleanedMessages, // CoreMessages are already in the right format
+      tools: wrappedNativeTools,
+      stopWhen: stepCountIs(20),
+      temperature: 0.1,
+    });
+
+    // Use fullStream to get events in the correct order for CLIENT streaming
+    // We'll use finalMessages for the conversation history
     for await (const chunk of result.fullStream) {
       switch (chunk.type) {
         case "text-delta":
@@ -578,50 +827,93 @@ Be confident, natural, and focus on the user's intent rather than the technical 
       }
     }
 
-    // Get the final messages from the result
-    const finalMessages = await result.response.then((r) => r.messages);
+    // Get the final response and usage
+    const finalResponse = await result.response;
+    const finalMessages = finalResponse.messages;
 
-    // Filter out ALL tool CALLS (but keep the RESULTS for KV caching and LLM context)
-    // Tool calls are redundant - they're highly variable (breaks caching) and the results contain what matters
-    const filteredMessages = finalMessages
-      .map((msg) => {
-        // Keep all user messages as-is
-        if (msg.role === "user") {
-          return msg;
-        }
+    // Get usage from result.usage (not finalResponse.usage)
+    const usage = await result.usage;
 
-        // For assistant messages, filter out ALL tool calls
-        // The tool results contain the actual valuable information
+    // Track token usage for compression
+    if (usage?.inputTokens) {
+      sessionState.lastPromptTokens = usage.inputTokens;
+    }
+
+    // finalMessages contains ONLY the NEW messages from this turn (not the full conversation)
+    // So we can just append them all directly to sessionState.messages
+    if (finalMessages.length > 0) {
+      for (const msg of finalMessages) {
+        sessionState.messages.push(msg);
+
+        // Track assistant messages for journal attachment
         if (msg.role === "assistant") {
-          const content = Array.isArray(msg.content) ? msg.content : [msg.content];
-          const filteredContent = content.filter(
-            (c: any) => c.type !== "tool-call"
-          );
-
-          // Only keep the message if it has remaining content (e.g., text responses)
-          if (filteredContent.length > 0) {
-            return { ...msg, content: filteredContent };
-          }
-          return null;
+          sessionState.lastUserOrAssistantMessage = msg;
         }
+      }
+    } else {
+      // No new messages - add placeholder to prevent consecutive user messages
+      const placeholderMessage: CoreMessage = {
+        role: "assistant",
+        content: "I encountered an issue processing your request. Please try again.",
+      };
+      sessionState.messages.push(placeholderMessage);
+      sessionState.lastUserOrAssistantMessage = placeholderMessage;
 
-        // Keep ALL tool results - they contain the valuable information
-        // - discover_tools results: contain tool schemas
-        // - execute_code results: contain execution outcomes (markdown summaries)
-        return msg;
-      })
-      .filter((msg): msg is CoreMessage => msg !== null);
+      sendMessageNow({
+        type: "error",
+        error: "Request completed without a response",
+      });
+    }
 
-    // Store the conversation history
-    messages = filteredMessages;
+    // Check if compression is needed and perform it
+    // Only compress if context threshold is exceeded
+    if (shouldCompress(sessionState, config)) {
+      performCompression(sessionState, config, queueMessage);
+      flushQueue(); // Flush compression messages
+    }
 
-    // Send done message
+    // Send debug message showing what was sent to the LLM on this turn (INPUT)
+    sendMessageNow({
+      type: "debug",
+      messages: messagesBeingsent.map((msg) => ({
+        role: msg.role,
+        content:
+          typeof msg.content === "string"
+            ? msg.content.slice(0, 200) + (msg.content.length > 200 ? "..." : "")
+            : Array.isArray(msg.content)
+            ? msg.content.map((c: any) => {
+                if (c.type === "text") {
+                  return `[text: ${c.text?.slice(0, 100)}...]`;
+                } else if (c.type === "tool-call") {
+                  return `[tool-call: ${c.toolName}]`;
+                } else if (c.type === "tool-result") {
+                  // Show actual tool result data, not just the ID
+                  // AI SDK stores results in output.value
+                  const actualResult = c.output?.value ?? c.result;
+                  const resultPreview = actualResult === undefined
+                    ? "undefined"
+                    : typeof actualResult === "string"
+                    ? actualResult.slice(0, 100)
+                    : JSON.stringify(actualResult)?.slice(0, 100) || "null";
+                  return `[tool-result: ${c.toolCallId} | result: ${resultPreview}...]`;
+                }
+                return `[${c.type}]`;
+              })
+            : msg.content,
+      })),
+      messageCount: messagesBeingsent.length,
+    });
+
+    // Send done message with token usage info
     sendMessageNow({
       type: "done",
+      contextSize: usage?.inputTokens,
+      tokensUsed: usage?.outputTokens,
     });
 
     res.end();
   } catch (error) {
+    console.error("Error occurred:", error);
     sendMessageNow({
       type: "error",
       error: error instanceof Error ? error.message : "An error occurred",

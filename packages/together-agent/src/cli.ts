@@ -359,15 +359,39 @@ program
                   }
 
                   switch (message.type) {
-                    case "discover_tools":
+                    case "execute_code_tools_discovery":
                       console.log("\n" + "─".repeat(70));
-                      console.log("🔍 TOOL DISCOVERY");
-                      console.log(`Query: ${message.query}`);
+                      console.log("🔍 CODE TOOLS DISCOVERY (for execute_code)");
+                      console.log(`Terms: ${message.terms}`);
                       if (message.matchedTools.length > 0) {
-                        console.log(`Matched tools: ${message.matchedTools.join(", ")}`);
+                        console.log(`Matched code tools: ${message.matchedTools.join(", ")}`);
                       } else {
-                        console.log("No tools matched");
+                        console.log("No code tools matched");
                       }
+                      console.log("─".repeat(70));
+                      break;
+
+                    case "journal_entry_created":
+                      console.log("\n" + "─".repeat(70));
+                      console.log("📓 JOURNAL ENTRY CREATED");
+                      console.log(`Entry ${message.entryIndex}: "${message.title}"`);
+                      console.log("─".repeat(70));
+                      break;
+
+                    case "journal_entries_read":
+                      console.log("\n" + "─".repeat(70));
+                      console.log("📖 JOURNAL ENTRIES READ");
+                      console.log(`Read entries: ${message.entryIndices.join(", ")}`);
+                      console.log("─".repeat(70));
+                      break;
+
+                    case "journal_entries_compressed":
+                      console.log("\n" + "─".repeat(70));
+                      console.log("🗜️  JOURNAL ENTRIES COMPRESSED");
+                      console.log("Compressed entries:");
+                      message.compressedEntries.forEach((entry: { index: number; title: string }) => {
+                        console.log(`  - Entry ${entry.index}: "${entry.title}"`);
+                      });
                       console.log("─".repeat(70));
                       break;
 
@@ -435,6 +459,15 @@ program
                       break;
 
                     case "done":
+                      // Display usage info if available
+                      if (message.contextSize !== undefined || message.tokensUsed !== undefined) {
+                        const contextInfo = message.contextSize !== undefined ? `Context: ${message.contextSize.toLocaleString()} tokens` : '';
+                        const tokensInfo = message.tokensUsed !== undefined ? `Used: ${message.tokensUsed.toLocaleString()} tokens` : '';
+                        const parts = [contextInfo, tokensInfo].filter(Boolean);
+                        if (parts.length > 0) {
+                          console.log(`\x1b[90m${parts.join(' | ')}\x1b[0m`); // Gray text
+                        }
+                      }
                       // Conversation continues automatically
                       break;
                   }

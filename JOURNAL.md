@@ -48,11 +48,11 @@ Compression Happens Automatically:
    - Triggers compression check
    - Returns journal entry index
 
-2. **Custom Tool: `tools.appendJournalEntry(markdown)`** - Writes to current entry during execution
+2. **Custom Tool: `tools.addJournalEntry(title, markdown)`** - Creates new journal entries during execution
    - Available during code execution scope
-   - Appends to `.journal/entry-{index}.md`
+   - Creates `.journal/entry-{index}.md` with the given title and content
    - Fire-and-forget: Does NOT add to message context
-   - Used to archive detailed findings
+   - Used to archive detailed findings as separate entries
 
 3. **Native Tool: `read_journal_entries({ entryIndices })`** - Reads journals back
    - Takes array of entry indices to read
@@ -63,11 +63,12 @@ Compression Happens Automatically:
 
 ### Automatic Compression System
 
-The system automatically compresses old journal entries to manage context:
+The system automatically compresses tool results to manage context:
 
-**Compression Trigger**: When context size exceeds token threshold (configurable, tracked from API responses)
-**Compression Scope**: Compress old entries, keeping active entry + recent K entries uncompressed (configurable)
-**Compression Format**: Single assistant message listing compressed entries
+**Compression Trigger**: When context size exceeds token threshold (default: 50000 tokens)
+**What Gets Compressed**: All tool result messages (role: "tool")
+**What's Preserved**: All user messages and assistant text messages
+**Compression Format**: Tool messages replaced with journal entry listings attached to their corresponding user/assistant messages
 
 ## Message Context Structure
 
@@ -82,33 +83,30 @@ interface JournalEntry {
 }
 
 interface SessionState {
-  messages: CoreMessage[];           // All conversation messages
-  journalEntries: JournalEntry[];   // Metadata for all entries
-  currentEntryIndex: number;         // Current journal entry being worked on (-1 = no active entry)
-  messageToEntryMap: Map<number, number>; // Maps message index to journal entry index
-  lastPromptTokens: number;          // Token count from last API response
+  messages: CoreMessage[];                    // All conversation messages
+  journalEntries: JournalEntry[];            // Metadata for all entries
+  messageToJournals: Map<any, number[]>;     // Maps message object to journal entry indices
+  lastUserOrAssistantMessage: any | null;    // Last user/assistant message for journal attachment
+  lastPromptTokens: number;                  // Token count from last API response
 }
 
 // Configuration options
 interface JournalConfig {
   contextSizeThreshold: number;  // Compress when context exceeds N tokens (default: 50000)
-  keepRecentCount: number;       // Keep most recent K completed entries uncompressed (default: 1)
-                                  // Note: Active entry is ALWAYS kept uncompressed
 }
 ```
 
-### Message Tagging
+### Journal Attachment
 
-Every message is tagged with the journal entry index it belongs to:
+Journals are attached to the last user or assistant message when created:
 
 ```typescript
-// When add_journal_entry() is called
-sessionState.currentEntryIndex = newEntryIndex;
+// When tools.addJournalEntry() is called during code execution
+const lastMessage = sessionState.lastUserOrAssistantMessage;
+const journalIndices = sessionState.messageToJournals.get(lastMessage) || [];
+sessionState.messageToJournals.set(lastMessage, [...journalIndices, newJournalIndex]);
 
-// As messages are added
-sessionState.messageToEntryMap.set(messageIndex, sessionState.currentEntryIndex);
-
-// This allows us to identify which messages belong to which entry for compression
+// This allows us to know which journals belong to which message for compression
 ```
 
 ### Context Building
@@ -158,56 +156,57 @@ function shouldCompress(sessionState: SessionState, config: JournalConfig): bool
 ```typescript
 function performCompression(
   sessionState: SessionState,
-  config: JournalConfig
+  config: JournalConfig,
+  queueMessage: (msg: AgentMessage) => void
 ): void {
-  // Find entries to compress (exclude active entry, keep recent K completed entries)
-  const uncompressedEntries = sessionState.journalEntries.filter(e => !e.compressed);
+  const newMessages: any[] = [];
+  const compressedJournalIndices: number[] = [];
 
-  // Separate active entry from completed entries
-  const completedEntries = uncompressedEntries.filter(e => e.index !== sessionState.currentEntryIndex);
+  // Iterate through messages, keeping user/assistant and removing tool messages
+  for (const message of sessionState.messages) {
+    if (message.role === "user" || message.role === "assistant") {
+      // Keep user and assistant messages
+      newMessages.push(message);
 
-  // Compress all completed entries except most recent K
-  const entriesToCompress = completedEntries.slice(0, -config.keepRecentCount);
+      // Check if this message has journals attached
+      const journalIndices = sessionState.messageToJournals.get(message);
+      if (journalIndices && journalIndices.length > 0) {
+        // Get uncompressed journals for this message
+        const uncompressedJournals = journalIndices
+          .map((idx) => sessionState.journalEntries[idx])
+          .filter((entry) => entry && !entry.compressed);
 
-  if (entriesToCompress.length === 0) return;
+        if (uncompressedJournals.length > 0) {
+          // Create journal listing message
+          const journalListingContent =
+            "Journal entries from this work:\n" +
+            uncompressedJournals
+              .map((e) => `- Entry ${e.index}: ${e.title}`)
+              .join("\n") +
+            "\n\nUse read_journal_entries({ entryIndices: [" +
+            uncompressedJournals.map((e) => e.index).join(", ") +
+            "] }) to retrieve details.";
 
-  // Find all message indices that belong to these entries
-  const messageIndicesToRemove = new Set<number>();
-  sessionState.messageToEntryMap.forEach((entryIndex, messageIndex) => {
-    if (entriesToCompress.some(e => e.index === entryIndex)) {
-      messageIndicesToRemove.add(messageIndex);
+          const journalMessage: any = {
+            role: "assistant",
+            content: journalListingContent,
+          };
+
+          newMessages.push(journalMessage);
+
+          // Mark these journals as compressed
+          uncompressedJournals.forEach((entry) => {
+            entry.compressed = true;
+            compressedJournalIndices.push(entry.index);
+          });
+        }
+      }
     }
-  });
+    // Skip tool messages entirely
+  }
 
-  // Create compressed message
-  const compressedMessage = {
-    role: "assistant",
-    content: createCompressedMessage(entriesToCompress)
-  };
-
-  // Remove old messages and insert compressed message at the start
-  const sortedIndices = Array.from(messageIndicesToRemove).sort((a, b) => a - b);
-  const firstIndex = sortedIndices[0];
-  const lastIndex = sortedIndices[sortedIndices.length - 1];
-  const removeCount = lastIndex - firstIndex + 1;
-
-  sessionState.messages.splice(firstIndex, removeCount, compressedMessage);
-
-  // Mark entries as compressed
-  entriesToCompress.forEach(entry => {
-    entry.compressed = true;
-  });
-
-  // Update message-to-entry map (indices shifted)
-  rebuildMessageToEntryMap(sessionState);
-}
-
-function createCompressedMessage(entries: JournalEntry[]): string {
-  return `Previous work has been documented in journal entries. You can read entries in detail if needed:
-
-${entries.map(e => `- Entry ${e.index}: "${e.title}"`).join('\n')}
-
-Use read_journal_entries({ entryIndices: [0, 1, ...] }) to retrieve specific entries.`;
+  // Replace messages array
+  sessionState.messages = newMessages;
 }
 ```
 
@@ -218,58 +217,49 @@ Use read_journal_entries({ entryIndices: [0, 1, ...] }) to retrieve specific ent
 Messages: [
   { role: "system", content: "..." },
   { role: "user", content: "Find and fix bugs" },
-  { role: "assistant", content: [add_journal_entry("Analyzing codebase")] },  // Entry 0
-  { role: "tool", content: "Created entry 0" },
-  { role: "assistant", content: [execute_code(...)] },
-  { role: "tool", content: "Found 15 bugs" },
-  { role: "assistant", content: [add_journal_entry("Fixing critical bugs")] },  // Entry 1
-  { role: "tool", content: "Created entry 1" },
-  { role: "assistant", content: [execute_code(...)] },
-  { role: "tool", content: "Fixed 5 bugs" },
-  { role: "assistant", content: [add_journal_entry("Fixing medium bugs")] },  // Entry 2
-  { role: "tool", content: "Created entry 2" },
-  { role: "assistant", content: [execute_code(...)] },
-  { role: "tool", content: "Fixed 7 bugs" },
-  { role: "assistant", content: [add_journal_entry("Running tests")] },  // Entry 3
-  { role: "tool", content: "Created entry 3" },
-  { role: "assistant", content: [execute_code(...)] },
-  { role: "tool", content: "Tests passing" },
-  { role: "assistant", content: [add_journal_entry("Writing documentation")] },  // Entry 4 - ACTIVE
-  { role: "tool", content: "Created entry 4" },
-  { role: "assistant", content: [execute_code(...)] },
+  { role: "assistant", content: "I'll analyze the codebase..." },  // journals 0, 1 attached
+  { role: "tool", content: "Found 15 bugs [huge output]" },
+  { role: "assistant", content: "I'll fix the critical ones..." },  // journal 2 attached
+  { role: "tool", content: "Fixed 5 bugs [huge output]" },
+  { role: "user", content: "Run the tests" },
+  { role: "assistant", content: "Running tests..." },  // journal 3 attached
+  { role: "tool", content: "Tests passing [huge output]" },
   // ← Compression triggers here (context: 55000 tokens > 50000 threshold)
 ]
 
-Current entry index: 4 (active)
-Last prompt tokens: 55000
+messageToJournals Map:
+  assistant[0] → [0, 1]  // "I'll analyze the codebase..."
+  assistant[1] → [2]     // "I'll fix the critical ones..."
+  assistant[2] → [3]     // "Running tests..."
 ```
 
-**After compression** (keeping active entry + 1 recent completed entry):
+**After compression** (tool messages removed, journal listings inserted):
 ```
 Messages: [
   { role: "system", content: "..." },
   { role: "user", content: "Find and fix bugs" },
-  { role: "assistant", content: "Previous work has been documented in journal entries. You can read entries in detail if needed:\n\n- Entry 0: \"Analyzing codebase\"\n- Entry 1: \"Fixing critical bugs\"\n- Entry 2: \"Fixing medium bugs\"\n\nUse read_journal_entries({ entryIndices: [0, 1, ...] }) to retrieve specific entries." },
-  { role: "assistant", content: [add_journal_entry("Running tests")] },  // Entry 3 - kept (recent completed)
-  { role: "tool", content: "Created entry 3" },
-  { role: "assistant", content: [execute_code(...)] },
-  { role: "tool", content: "Tests passing" },
-  { role: "assistant", content: [add_journal_entry("Writing documentation")] },  // Entry 4 - kept (active)
-  { role: "tool", content: "Created entry 4" },
-  { role: "assistant", content: [execute_code(...)] },
-  // ← Subsequent messages for entry 4 continue here
+  { role: "assistant", content: "I'll analyze the codebase..." },
+  { role: "assistant", content: "Journal entries from this work:\n- Entry 0: Bug Analysis\n- Entry 1: Vulnerability Scan\n\nUse read_journal_entries({ entryIndices: [0, 1] }) to retrieve details." },
+  { role: "assistant", content: "I'll fix the critical ones..." },
+  { role: "assistant", content: "Journal entries from this work:\n- Entry 2: Critical Fixes Applied\n\nUse read_journal_entries({ entryIndices: [2] }) to retrieve details." },
+  { role: "user", content: "Run the tests" },
+  { role: "assistant", content: "Running tests..." },
+  { role: "assistant", content: "Journal entries from this work:\n- Entry 3: Test Results\n\nUse read_journal_entries({ entryIndices: [3] }) to retrieve details." },
 ]
 
 Journal Entries State: [
-  { index: 0, title: "Analyzing codebase", compressed: true, ... },
-  { index: 1, title: "Fixing critical bugs", compressed: true, ... },
-  { index: 2, title: "Fixing medium bugs", compressed: true, ... },
-  { index: 3, title: "Running tests", compressed: false, ... },  // Recent completed, uncompressed
-  { index: 4, title: "Writing documentation", compressed: false, ... }  // Active, uncompressed
+  { index: 0, title: "Bug Analysis", compressed: true, ... },
+  { index: 1, title: "Vulnerability Scan", compressed: true, ... },
+  { index: 2, title: "Critical Fixes Applied", compressed: true, ... },
+  { index: 3, title: "Test Results", compressed: true, ... }
 ]
-
-Current entry index: 4
 ```
+
+**Key differences:**
+- All tool messages removed (they contain the bulk of the context)
+- User and assistant text messages preserved (the narrative)
+- Journal listings inserted after their associated messages
+- Context reduced from 55000 → ~10000 tokens while preserving the conversation flow
 
 **Context saved**: Replaced ~12 messages with 1 compressed message, maintaining access to all details via `read_journal_entries()`.
 
@@ -285,20 +275,21 @@ LLM → add_journal_entry({ title: "Analyzing authentication system" })
   System: Tags subsequent messages to entry 0
 
 LLM → execute_code(`
-  await tools.appendJournalEntry("## Security Audit\\n\\nScanning auth files...");
-
   const vulns = await tools.scanVulnerabilities();
 
-  await tools.appendJournalEntry(\`
-## Vulnerabilities Found
+  await tools.addJournalEntry(
+    "Security Audit Results",
+    \`
+## Scan Summary
 
-Total: \${vulns.length}
+Found \${vulns.length} vulnerabilities across authentication files.
 
-### Critical:
+### Critical Issues:
 \${vulns.filter(v => v.severity === 'critical').map(v =>
   \`- \${v.type} in \${v.file}:\${v.line}\`
 ).join('\\n')}
-  \`);
+    \`
+  );
 `)
   System: Writes to .journal/entry-0.md (not added to messages)
   System: All messages tagged to entry 0
@@ -330,11 +321,18 @@ LLM → add_journal_entry({ title: "Fixing SQL injection vulnerability" })
   System: Tags subsequent messages to entry 1
 
 LLM → execute_code(`
-  await tools.appendJournalEntry("## SQL Injection Fix\\n\\nApplying parameterized queries...");
-
   const result = await tools.fixSQLInjection("auth/login.ts", 45);
 
-  await tools.appendJournalEntry(\`Fixed: \${result.success ? '✓' : '✗'}\`);
+  await tools.addJournalEntry(
+    "SQL Injection Fix",
+    \`
+## Fix Applied
+
+Applied parameterized queries to auth/login.ts:45
+
+Result: \${result.success ? '✓' : '✗'}
+    \`
+  );
 `)
   System: Writes to .journal/entry-1.md
   System: All messages tagged to entry 1
@@ -515,33 +513,54 @@ const createAddJournalEntryTool = (
 });
 ```
 
-### Custom Tool: appendJournalEntry
+### Custom Tool: addJournalEntry
 
 ```typescript
-const createAppendJournalEntryTool = (
+const createAddJournalEntryTool = (
   sessionState: SessionState,
-  workspacePath: string
+  config: JournalConfig,
+  workspacePath: string,
+  queueMessage: (msg: EventMessage) => void
 ) => {
-  return async (markdown: string) => {
-    const currentEntry = sessionState.journalEntries[sessionState.currentEntryIndex];
-    if (!currentEntry) {
-      console.warn("No current journal entry to append to");
-      return;
-    }
+  return async (title: string, markdown: string) => {
+    // Create new journal entry
+    const entryIndex = sessionState.journalEntries.length;
+    const filePath = `.journal/entry-${entryIndex}.md`;
 
-    const journalPath = path.join(workspacePath, currentEntry.filePath);
+    const entry: JournalEntry = {
+      index: entryIndex,
+      title,
+      compressed: false,
+      filePath,
+    };
 
-    try {
-      fs.appendFileSync(journalPath, markdown + '\n\n');
-    } catch (error) {
-      console.warn(`Failed to write to journal entry ${currentEntry.index}:`, error);
+    sessionState.journalEntries.push(entry);
+    sessionState.currentEntryIndex = entryIndex;
+
+    // Create journal file with title and content
+    const journalDir = path.join(workspacePath, ".journal");
+    fs.mkdirSync(journalDir, { recursive: true });
+
+    const fullContent = `# ${title}\n\n${markdown.trim()}\n`;
+    fs.writeFileSync(path.join(workspacePath, filePath), fullContent);
+
+    // Send SSE message
+    queueMessage({
+      type: "journal_entry_created",
+      entryIndex,
+      title,
+    });
+
+    // Check if compression needed
+    if (shouldCompress(sessionState, config)) {
+      performCompression(sessionState, config, queueMessage);
     }
   };
 };
 
 // Expose to code execution
 const tools = {
-  appendJournalEntry: createAppendJournalEntryTool(sessionState, workspacePath),
+  addJournalEntry: createAddJournalEntryTool(sessionState, config, workspacePath, queueMessage),
   // ... other tools
 };
 ```
@@ -747,7 +766,7 @@ const readJournalEntriesTool = createReadJournalEntriesTool(workspacePath, queue
 
 // Custom tools for execute_code
 const customTools = {
-  appendJournalEntry: createAppendJournalEntryTool(sessionState, workspacePath),
+  addJournalEntry: createAddJournalEntryTool(sessionState, config, workspacePath, queueMessage),
   // ... other tools
 };
 ```
@@ -786,14 +805,14 @@ add_journal_entry({ title: "Fixing SQL injection vulnerability" });
 
 ### Writing to Journals
 
-During code execution, use `tools.appendJournalEntry(markdown)` to document detailed findings:
+During code execution, use `tools.addJournalEntry(title, markdown)` to create new journal entries:
 
 ```javascript
-await tools.appendJournalEntry("## Security Audit\\n\\nStarting vulnerability scan...");
-
 const vulns = await tools.scanVulnerabilities();
 
-await tools.appendJournalEntry(\`
+await tools.addJournalEntry(
+  "Security Audit Results",
+  \`
 ## Vulnerabilities Found
 
 Total: \${vulns.length}
@@ -802,7 +821,8 @@ Total: \${vulns.length}
 \${vulns.filter(v => v.severity === 'critical').map(v =>
   \`- \${v.type} in \${v.file}:\${v.line} - \${v.description}\`
 ).join('\\n')}
-\`);
+  \`
+);
 ```
 
 **What to journal:**
@@ -875,12 +895,12 @@ When you see this, recent and active work is still in your context, but older wo
 add_journal_entry({ title: "Analyzing codebase for type errors" });
 
 execute_code(\`
-  await tools.appendJournalEntry("## Type Check\\n\\nScanning files...");
-
   const errors = await tools.runTypeChecker();
 
   // Archive detailed findings
-  await tools.appendJournalEntry(\\\`
+  await tools.addJournalEntry(
+    "Type Check Results",
+    \\\`
 ## Errors Found: \\\${errors.length}
 
 ### By Severity:
@@ -890,7 +910,8 @@ execute_code(\`
 
 ### Full List:
 \\\${errors.map(e => \\\`- \\\${e.file}:\\\${e.line} - \\\${e.message}\\\`).join('\\\\n')}
-  \\\`);
+    \\\`
+  );
 \`);
 
 // Phase 2: Fixing
@@ -900,8 +921,12 @@ add_journal_entry({ title: "Fixing type errors" });
 const errorDetails = await read_journal_entries({ entryIndices: [0] });
 
 execute_code(\`
-  // Fix errors based on journal details
-  await tools.appendJournalEntry("## Fixes Applied\\n\\n...");
+  const fixes = await tools.fixErrors();
+
+  await tools.addJournalEntry(
+    "Fixes Applied",
+    \\\`Fixed \\\${fixes.length} errors\\\`
+  );
 \`);
 ```
 
@@ -910,8 +935,8 @@ execute_code(\`
 ### add_journal_entry({ title })
 **Native tool** - Creates a new journal entry with the given title. Subsequent work is associated with this entry. Call directly (not through execute_code).
 
-### tools.appendJournalEntry(markdown)
-**Custom tool** - Available during code execution. Appends markdown content to the current journal entry file. Fire-and-forget (not added to conversation).
+### tools.addJournalEntry(title, markdown)
+**Custom tool** - Available during code execution. Creates a new journal entry with the given title and markdown content. Fire-and-forget (not added to conversation).
 
 ### read_journal_entries({ entryIndices })
 **Native tool** - Reads the full contents of one or more journal entries and adds them to the conversation context. Takes an array of entry indices. Call directly (not through execute_code).
@@ -1076,7 +1101,7 @@ This gives users visibility into progress without seeing all the messages.
 - [ ] Accept array of entry indices in read tool
 - [ ] Send `journal_entries_read` SSE message when reading
 - [ ] Handle edge cases (no current entry, missing file, invalid indices)
-- [ ] Ensure fire-and-forget behavior for `appendJournalEntry`
+- [ ] Ensure fire-and-forget behavior for `addJournalEntry`
 - [ ] Ensure `read_journal_entries` adds content to messages
 - [ ] Format multiple entries with separators
 
@@ -1128,14 +1153,15 @@ This gives users visibility into progress without seeing all the messages.
 add_journal_entry({ title: "Analyzing authentication system" });
 
 execute_code(\`
-  await tools.appendJournalEntry("## Security Audit\\n\\nScanning auth files...");
-
   const files = await tools.findAuthFiles();
-  await tools.appendJournalEntry(\\\`Found \\\${files.length} files\\\`);
-
   const vulns = await tools.scanVulnerabilities(files);
 
-  await tools.appendJournalEntry(\\\`
+  await tools.addJournalEntry(
+    "Security Audit Results",
+    \\\`
+## Files Scanned
+Found \\\${files.length} auth-related files
+
 ## Vulnerabilities Found: \\\${vulns.length}
 
 ### Critical (\\\${vulns.critical.length}):
@@ -1143,15 +1169,20 @@ execute_code(\`
 
 ### Medium (\\\${vulns.medium.length}):
 \\\${vulns.medium.map(v => \\\`- \\\${v.type} in \\\${v.file}:\\\${v.line}\\\`).join('\\\\n')}
-  \\\`);
+    \\\`
+  );
 \`);
 
 // Turn 2
 add_journal_entry({ title: "Fixing SQL injection in login" });
 
 execute_code(\`
-  await tools.appendJournalEntry("## SQL Injection Fix\\n\\n...");
-  // ... fix code
+  const fix = await tools.applySQLFix();
+
+  await tools.addJournalEntry(
+    "SQL Injection Fix",
+    \\\`Applied fix: \\\${fix.success ? '✓' : '✗'}\\\`
+  );
 \`);
 ```
 
@@ -1214,8 +1245,12 @@ const context = await read_journal_entries({ entryIndices: [0, 1] });
 add_journal_entry({ title: "Debugging test failures" });  // Entry 5 - becomes active
 
 execute_code(\`
-  await tools.appendJournalEntry("## Test Failure Analysis\\n\\n...");
-  // ... debug with full context
+  const issues = await tools.analyzeTestFailures();
+
+  await tools.addJournalEntry(
+    "Test Failure Analysis",
+    \\\`Found \\\${issues.length} issues causing test failures\\\`
+  );
 \`);
 ```
 

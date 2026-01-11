@@ -17,6 +17,12 @@ export function Chat() {
   const [input, setInput] = useState('')
   const [approvalRequest, setApprovalRequest] = useState<ApprovalRequest | null>(null)
   const [pdfs, setPdfs] = useState<PDFItem[]>([])
+  const [tokenUsage, setTokenUsage] = useState<{
+    contextSize?: number;
+    tokensUsed?: number;
+    totalInputTokens: number;
+    totalOutputTokens: number;
+  }>({ totalInputTokens: 0, totalOutputTokens: 0 })
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
@@ -58,8 +64,8 @@ export function Chat() {
 
         // Track PDF generation
         if (agentMessage.type === 'custom_tool_call_started' && agentMessage.toolName === 'generatePDF') {
-          // Extract filename from payload
-          const params = agentMessage.payload
+          // Extract filename from args
+          const params = agentMessage.args
           const filename = params?.filename || 'document.pdf'
           const pdfFilename = filename.endsWith('.pdf') ? filename : `${filename}.pdf`
 
@@ -89,14 +95,24 @@ export function Chat() {
           )
         }
 
-        // Filter out discovery and done messages
-        const filteredTypes = [
-          'discover_tools',
-          'done',
-        ]
+        // Handle done message for token usage stats
+        if (agentMessage.type === 'done') {
+          setTokenUsage((prev) => ({
+            contextSize: agentMessage.contextSize,
+            tokensUsed: agentMessage.tokensUsed,
+            totalInputTokens: prev.totalInputTokens + (agentMessage.contextSize || 0),
+            totalOutputTokens: prev.totalOutputTokens + (agentMessage.tokensUsed || 0),
+          }))
+          return // Don't add as message
+        }
 
-        if (filteredTypes.includes(agentMessage.type)) {
-          return // Skip these internal messages
+        // Handle debug message - just log to console, don't display
+        if (agentMessage.type === 'debug') {
+          console.log('=== DEBUG: Messages sent to LLM ===')
+          console.log('Message count:', agentMessage.messageCount)
+          console.log('Messages:', agentMessage.messages)
+          console.log('===================================')
+          return // Don't add as message
         }
 
         // Add or update agent message
@@ -126,7 +142,7 @@ export function Chat() {
             return [
               ...prev,
               {
-                id: `execution-${agentMessage.executionId}`,
+                id: `execution-${agentMessage.executionId || `${Date.now()}-${Math.random()}`}`,
                 type: 'agent' as const,
                 content: '',
                 agentMessage: {
@@ -232,10 +248,68 @@ export function Chat() {
                       ...msg.agentMessage!,
                       type: 'code_execution_completed',
                       code: msg.agentMessage!.code || agentMessage.code,
+                      result: agentMessage.result,
+                      error: agentMessage.error,
                     },
                   }
                 : msg
             )
+          }
+
+          // For execute_code_tools_discovery, add as new message
+          if (agentMessage.type === 'execute_code_tools_discovery') {
+            return [
+              ...prev,
+              {
+                id: `execute-code-tools-discovery-${Date.now()}`,
+                type: 'agent' as const,
+                content: '',
+                agentMessage: agentMessage,
+                timestamp: new Date(),
+              },
+            ]
+          }
+
+          // For journal_entry_created, add as new message
+          if (agentMessage.type === 'journal_entry_created') {
+            return [
+              ...prev,
+              {
+                id: `journal-created-${agentMessage.entryIndex}`,
+                type: 'agent' as const,
+                content: '',
+                agentMessage: agentMessage,
+                timestamp: new Date(),
+              },
+            ]
+          }
+
+          // For journal_entries_read, add as new message
+          if (agentMessage.type === 'journal_entries_read') {
+            return [
+              ...prev,
+              {
+                id: `journal-read-${Date.now()}`,
+                type: 'agent' as const,
+                content: '',
+                agentMessage: agentMessage,
+                timestamp: new Date(),
+              },
+            ]
+          }
+
+          // For journal_entries_compressed, add as new message
+          if (agentMessage.type === 'journal_entries_compressed') {
+            return [
+              ...prev,
+              {
+                id: `journal-compressed-${Date.now()}`,
+                type: 'agent' as const,
+                content: '',
+                agentMessage: agentMessage,
+                timestamp: new Date(),
+              },
+            ]
           }
 
           // For all other message types, create new message
@@ -279,6 +353,51 @@ export function Chat() {
 
   return (
     <div className="flex flex-col h-full">
+      {/* Token usage stats bar */}
+      {tokenUsage && (tokenUsage.totalInputTokens > 0 || tokenUsage.totalOutputTokens > 0) && (
+        <div className="bg-gray-50 border-b border-gray-200 px-6 py-2 flex items-center justify-between text-xs">
+          <div className="flex items-center gap-6">
+            {/* Total tokens */}
+            <div className="flex items-center gap-2">
+              <span className="text-gray-500">Total Tokens:</span>
+              <span className="font-mono font-semibold text-gray-800">
+                {(tokenUsage.totalInputTokens + tokenUsage.totalOutputTokens).toLocaleString()}
+              </span>
+              <span className="text-gray-400">
+                ({tokenUsage.totalInputTokens.toLocaleString()} in / {tokenUsage.totalOutputTokens.toLocaleString()} out)
+              </span>
+            </div>
+
+            {/* Divider */}
+            <div className="h-4 w-px bg-gray-300" />
+
+            {/* Last turn stats */}
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <span className="text-gray-500">Last Context:</span>
+                <span className={`font-mono font-semibold ${
+                  (tokenUsage.contextSize || 0) > 50000
+                    ? 'text-red-600'
+                    : (tokenUsage.contextSize || 0) > 40000
+                    ? 'text-orange-600'
+                    : 'text-gray-800'
+                }`}>
+                  {tokenUsage.contextSize?.toLocaleString() || 0}
+                </span>
+                {(tokenUsage.contextSize || 0) > 50000 && (
+                  <span className="text-red-600 text-xs">(compressed)</span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-gray-500">Last Response:</span>
+                <span className="font-mono font-semibold text-gray-800">
+                  {tokenUsage.tokensUsed?.toLocaleString() || 0}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {/* Messages area */}
       <div className="flex-1 overflow-y-auto p-6 space-y-4">
         {messages.length === 0 && (

@@ -4,13 +4,17 @@ import { ensureToolCallsAreAwaited } from "./transform_code";
 // Default execution timeout in milliseconds (30 seconds)
 const EXECUTION_TIMEOUT_MS = 30000;
 
-export async function executeTools(code: string, tools: Record<string, any>) {
+export async function executeTools(
+  code: string,
+  codeTools: Record<string, any>,
+  addJournalEntry?: (title: string, markdown: string) => Promise<void>
+) {
   try {
     // Transform code to ensure all tool calls are awaited
     const transformedCode = ensureToolCallsAreAwaited(code);
 
     // Validate the code before execution (console is NOT allowed)
-    const validation = validateCode(transformedCode, ["tools"]);
+    const validation = validateCode(transformedCode, ["codeTools"]);
     if (!validation.isValid) {
       return {
         result: undefined,
@@ -18,25 +22,31 @@ export async function executeTools(code: string, tools: Record<string, any>) {
       };
     }
 
-    // Wrap tools so they can be called directly as functions
+    // Wrap code tools so they can be called directly as functions
     // IMPORTANT: We wrap in anonymous functions to prevent toString() from exposing implementation
-    const wrappedTools: Record<string, any> = {};
-    for (const [name, tool] of Object.entries(tools)) {
+    const wrappedCodeTools: Record<string, any> = {};
+
+    // Add addJournalEntry if provided (fire-and-forget tool)
+    if (addJournalEntry) {
+      wrappedCodeTools.addJournalEntry = addJournalEntry;
+    }
+
+    for (const [name, tool] of Object.entries(codeTools)) {
       // Create a wrapper function that hides the original implementation
       const wrapper = async (...args: any[]) => {
         return await tool.execute(...args);
       };
 
       // Make the tool callable directly
-      wrappedTools[name] = wrapper;
+      wrappedCodeTools[name] = wrapper;
 
-      // Also keep the original structure for tools.name.execute() pattern
-      wrappedTools[name].execute = wrapper;
+      // Also keep the original structure for codeTools.name.execute() pattern
+      wrappedCodeTools[name].execute = wrapper;
     }
 
-    // Create the async function with tools in scope
+    // Create the async function with codeTools in scope
     const asyncFunc = new Function(
-      "tools",
+      "codeTools",
       `return (async () => {
 ${transformedCode}
       })();`
@@ -44,7 +54,7 @@ ${transformedCode}
 
     // Execute with timeout protection and capture the return value
     const result = await Promise.race([
-      asyncFunc(wrappedTools),
+      asyncFunc(wrappedCodeTools),
       new Promise((_, reject) =>
         setTimeout(
           () => reject(new Error(`Execution timeout: code took longer than ${EXECUTION_TIMEOUT_MS / 1000} seconds`)),

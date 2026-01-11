@@ -1,18 +1,22 @@
 export type AgentMessage =
-  | DiscoverToolsMessage
+  | ExecuteCodeToolsDiscoveryMessage
   | CodeExecutionStartedMessage
   | CodeExecutionCompletedMessage
   | CustomToolCallStartedMessage
   | CustomToolCallCompletedMessage
   | ApprovalRequestMessage
+  | JournalEntryCreatedMessage
+  | JournalEntriesReadMessage
+  | JournalEntriesCompressedMessage
   | TextMessage
   | ErrorMessage
-  | DoneMessage;
+  | DoneMessage
+  | DebugMessage;
 
 // Native tool messages
-export interface DiscoverToolsMessage {
-  type: "discover_tools";
-  query: string;
+export interface ExecuteCodeToolsDiscoveryMessage {
+  type: "execute_code_tools_discovery";
+  terms: string;
   matchedTools: string[];
 }
 
@@ -55,6 +59,17 @@ export interface ErrorMessage {
 
 export interface DoneMessage {
   type: "done";
+  contextSize?: number;
+  tokensUsed?: number;
+}
+
+export interface DebugMessage {
+  type: "debug";
+  messages: Array<{
+    role: string;
+    content: any;
+  }>;
+  messageCount: number;
 }
 
 // Approval messages
@@ -62,6 +77,23 @@ export interface ApprovalRequestMessage {
   type: "approval_request";
   approvalId: string;
   payload: any;
+}
+
+// Journal messages
+export interface JournalEntryCreatedMessage {
+  type: "journal_entry_created";
+  entryIndex: number;
+  title: string;
+}
+
+export interface JournalEntriesReadMessage {
+  type: "journal_entries_read";
+  entryIndices: number[];
+}
+
+export interface JournalEntriesCompressedMessage {
+  type: "journal_entries_compressed";
+  compressedEntries: Array<{ index: number; title: string }>;
 }
 
 export interface ApprovalResponse {
@@ -81,4 +113,31 @@ export interface ToolExecutionContext {
   secrets: Record<string, string>;
   requestApproval: (payload: any, timeoutMs?: number) => Promise<void>;
   workspacePath: string;
+}
+
+// Journal entry system
+export interface JournalEntry {
+  index: number;
+  title: string;
+  compressed: boolean;
+  filePath: string;
+}
+
+export interface JournalConfig {
+  contextSizeThreshold: number;  // Default: 50000
+}
+
+export interface DiscoveredTool {
+  name: string;
+  inputSchema: any;
+  outputSchema: any;
+}
+
+export interface SessionState {
+  messages: any[];  // CoreMessage[] imported from 'ai'
+  journalEntries: JournalEntry[];
+  messageToJournals: Map<any, number[]>;  // Maps message object to journal entry indices
+  lastUserOrAssistantMessage: any | null;  // Track last user/assistant message for journal attachment
+  lastPromptTokens: number;
+  discoveredTools: Map<string, DiscoveredTool>;  // Maps tool name to tool definition
 }
