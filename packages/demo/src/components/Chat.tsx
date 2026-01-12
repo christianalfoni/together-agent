@@ -12,11 +12,21 @@ interface ChatMessage {
   timestamp: Date
 }
 
+interface AttachedFile {
+  id: string
+  name: string
+  path: string
+  size: number
+  status: 'uploading' | 'uploaded' | 'error'
+  error?: string
+}
+
 export function Chat() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [approvalRequest, setApprovalRequest] = useState<ApprovalRequest | null>(null)
   const [pdfs, setPdfs] = useState<PDFItem[]>([])
+  const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([])
   const [tokenUsage, setTokenUsage] = useState<{
     contextSize?: number;
     tokensUsed?: number;
@@ -25,6 +35,7 @@ export function Chat() {
   }>({ totalInputTokens: 0, totalOutputTokens: 0 })
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const { sendPrompt, handleApproval, isStreaming, error } = useAgentStream()
 
@@ -38,11 +49,92 @@ export function Chat() {
     inputRef.current?.focus()
   }, [])
 
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || [])
+    if (files.length === 0) return
+
+    // Create file entries with uploading status
+    const newFiles: AttachedFile[] = files.map((file) => ({
+      id: `${Date.now()}-${Math.random()}`,
+      name: file.name,
+      path: '', // Will be set after upload
+      size: file.size,
+      status: 'uploading',
+    }))
+
+    setAttachedFiles((prev) => [...prev, ...newFiles])
+
+    // Upload files
+    const formData = new FormData()
+    files.forEach((file) => formData.append('files', file))
+
+    try {
+      const response = await fetch('/api/agent/files', {
+        method: 'POST',
+        body: formData,
+      })
+
+      if (!response.ok) {
+        throw new Error('Upload failed')
+      }
+
+      const result = await response.json()
+
+      // Update file statuses
+      setAttachedFiles((prev) =>
+        prev.map((file, idx) => {
+          const uploadedFile = result.files[idx]
+          if (uploadedFile && file.status === 'uploading') {
+            return {
+              ...file,
+              path: uploadedFile.path,
+              status: 'uploaded',
+            }
+          }
+          return file
+        })
+      )
+    } catch (error) {
+      console.error('File upload error:', error)
+      // Mark all uploading files as error
+      setAttachedFiles((prev) =>
+        prev.map((file) =>
+          file.status === 'uploading'
+            ? { ...file, status: 'error', error: 'Upload failed' }
+            : file
+        )
+      )
+    }
+
+    // Reset file input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+    }
+  }
+
+  const handleRemoveFile = (fileId: string) => {
+    setAttachedFiles((prev) => prev.filter((file) => file.id !== fileId))
+  }
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  }
+
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault()
 
     const trimmedInput = input.trim()
     if (!trimmedInput || isStreaming || approvalRequest) return
+
+    // Build prompt with attachments
+    let prompt = trimmedInput
+    const uploadedFiles = attachedFiles.filter((f) => f.status === 'uploaded')
+    if (uploadedFiles.length > 0) {
+      const filePaths = uploadedFiles.map((f) => f.path).join(', ')
+      prompt = `${trimmedInput}\n\nAttachments added: ${filePaths}`
+    }
 
     // Add user message
     const userMessage: ChatMessage = {
@@ -54,10 +146,11 @@ export function Chat() {
 
     setMessages((prev) => [...prev, userMessage])
     setInput('')
+    setAttachedFiles([]) // Clear attachments after sending
 
     // Send prompt and handle streaming messages
     await sendPrompt(
-      trimmedInput,
+      prompt,
       (agentMessage) => {
         // Log all messages to console
         console.log('Received message:', agentMessage.type, agentMessage)
@@ -439,42 +532,113 @@ export function Chat() {
             <PDFList pdfs={pdfs} />
           </div>
         )}
+
+        {/* Attached files display */}
+        {attachedFiles.length > 0 && (
+          <div className="mb-3 flex flex-wrap gap-2">
+            {attachedFiles.map((file) => (
+              <div
+                key={file.id}
+                className={`inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm ${
+                  file.status === 'uploaded'
+                    ? 'bg-blue-50 text-blue-700 border border-blue-200'
+                    : file.status === 'uploading'
+                    ? 'bg-gray-50 text-gray-600 border border-gray-200'
+                    : 'bg-red-50 text-red-700 border border-red-200'
+                }`}
+              >
+                {file.status === 'uploading' && (
+                  <div className="w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
+                )}
+                {file.status === 'uploaded' && (
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                )}
+                {file.status === 'error' && (
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                )}
+                <span className="font-medium">{file.name}</span>
+                <span className="text-xs opacity-75">({formatFileSize(file.size)})</span>
+                {file.status !== 'uploading' && (
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveFile(file.id)}
+                    className="ml-1 hover:opacity-70"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
         <form onSubmit={handleSendMessage} className="flex gap-3">
-          <textarea
-            ref={inputRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={
-              approvalRequest
-                ? 'Waiting for approval...'
-                : isStreaming
-                ? 'Agent is responding...'
-                : 'Type your message... (Shift+Enter for new line)'
-            }
-            disabled={isInputDisabled}
-            className="flex-1 resize-none border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent disabled:bg-gray-100 disabled:cursor-not-allowed"
-            rows={3}
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            onChange={handleFileSelect}
+            className="hidden"
           />
-          <button
-            type="submit"
-            disabled={isInputDisabled || !input.trim()}
-            className="px-6 py-3 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-200"
-          >
-            <svg
-              className="w-5 h-5"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
+
+          <div className="flex-1 flex flex-col gap-2">
+            <textarea
+              ref={inputRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={
+                approvalRequest
+                  ? 'Waiting for approval...'
+                  : isStreaming
+                  ? 'Agent is responding...'
+                  : 'Type your message... (Shift+Enter for new line)'
+              }
+              disabled={isInputDisabled}
+              className="resize-none border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent disabled:bg-gray-100 disabled:cursor-not-allowed"
+              rows={3}
+            />
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isInputDisabled}
+              className="p-3 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-200"
+              title="Attach files"
             >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
-              />
-            </svg>
-          </button>
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+              </svg>
+            </button>
+
+            <button
+              type="submit"
+              disabled={isInputDisabled || !input.trim()}
+              className="p-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-200"
+            >
+              <svg
+                className="w-5 h-5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
+                />
+              </svg>
+            </button>
+          </div>
         </form>
       </div>
 

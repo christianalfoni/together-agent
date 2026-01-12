@@ -2,8 +2,18 @@ import { Router } from 'express'
 import type { Request } from 'express'
 import * as fs from 'fs'
 import * as path from 'path'
+import multer from 'multer'
 
 export const agentRouter = Router()
+
+// Configure multer for in-memory file uploads
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB per file
+    files: 10, // Max 10 files per upload
+  },
+})
 
 // Type guard for authenticated requests
 interface AuthenticatedRequest extends Request {
@@ -32,6 +42,7 @@ function requireAuth(req: any, res: any, next: any) {
 
 // Initialize agent (called on server startup)
 let agentUrl: string | null = null
+let agentInstance: any = null
 
 export async function initializeAgent() {
   const { TogetherAgentSDK } = await import('together-agent')
@@ -54,6 +65,7 @@ export async function initializeAgent() {
     const sdk = new TogetherAgentSDK({ apiKey })
     const agent = await sdk.createAgent(templateId)
     agentUrl = agent.url
+    agentInstance = agent // Store the agent instance for uploadFile()
     console.log('✅ Agent created successfully')
     console.log('   Agent URL:', agentUrl)
     console.log('   Approval URL will be:', (agentUrl.endsWith('/') ? agentUrl : agentUrl + '/') + 'approval')
@@ -172,6 +184,64 @@ agentRouter.post('/approval', requireAuth, async (req: AuthenticatedRequest, res
   } catch (error: any) {
     console.error('Approval error:', error)
     res.status(500).json({ error: error.message || 'Failed to handle approval' })
+  }
+})
+
+// POST /api/agent/files - Upload files to agent workspace
+agentRouter.post('/files', requireAuth, upload.array('files', 10), async (req: AuthenticatedRequest, res) => {
+  if (!agentInstance) {
+    return res.status(503).json({ error: 'Agent is not initialized' })
+  }
+
+  const files = req.files as Express.Multer.File[]
+
+  if (!files || files.length === 0) {
+    return res.status(400).json({ error: 'No files provided' })
+  }
+
+  try {
+    const uploadResults = []
+
+    for (const file of files) {
+      // Generate unique filename to avoid collisions
+      const timestamp = Date.now()
+      const filename = `${timestamp}_${file.originalname}`
+
+      console.log(`Uploading file: ${filename} (${file.size} bytes)`)
+
+      // Upload to agent workspace
+      const uploadResponse = await agentInstance.uploadFile(
+        filename,
+        file.buffer,
+        file.mimetype
+      )
+
+      if (!uploadResponse.ok) {
+        throw new Error(`Failed to upload ${file.originalname}: ${uploadResponse.statusText}`)
+      }
+
+      const result = await uploadResponse.json()
+
+      uploadResults.push({
+        originalName: file.originalname,
+        path: result.path || filename,
+        size: file.size,
+        mimetype: file.mimetype,
+      })
+    }
+
+    console.log(`✅ Successfully uploaded ${uploadResults.length} file(s)`)
+
+    res.json({
+      success: true,
+      files: uploadResults,
+    })
+  } catch (error: any) {
+    console.error('File upload error:', error)
+    res.status(500).json({
+      error: error.message || 'Failed to upload files',
+      success: false,
+    })
   }
 })
 

@@ -65,6 +65,7 @@ interface Agent {
   approve: (approvalId: string) => Promise<void>;
   reject: (approvalId: string) => Promise<void>;
   downloadFile: (filePath: string) => Promise<Response>;
+  uploadFile: (filePath: string, content: Buffer | Uint8Array | Blob, contentType?: string) => Promise<Response>;
   sandboxId: string;
   url: string;
   baseUrl: string;
@@ -203,6 +204,29 @@ export class TogetherAgentSDK {
             const text = await response.text();
             throw new Error(
               `Failed to download file with status ${response.status}: ${text}`
+            );
+          }
+
+          return response;
+        },
+        uploadFile: async (filePath: string, content: Buffer | Uint8Array | Blob, contentType?: string) => {
+          const uploadUrl = `${baseUrl}/files/${filePath}`;
+
+          const headers: Record<string, string> = {};
+          if (contentType) {
+            headers['Content-Type'] = contentType;
+          }
+
+          const response = await fetch(uploadUrl, {
+            method: 'PUT',
+            headers,
+            body: content,
+          });
+
+          if (!response.ok) {
+            const text = await response.text();
+            throw new Error(
+              `Failed to upload file with status ${response.status}: ${text}`
             );
           }
 

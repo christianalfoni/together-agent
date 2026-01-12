@@ -578,6 +578,81 @@ router.get("/files/*filepath", (req, res) => {
   }
 });
 
+router.put("/files/*filepath", (req, res) => {
+  try {
+    // Extract the file path from the URL (everything after /files/)
+    // filepath is an array when using wildcard routes
+    const requestedPath = Array.isArray(req.params.filepath)
+      ? req.params.filepath.join("/")
+      : req.params.filepath;
+
+    if (!requestedPath) {
+      return res.status(400).json({ error: "File path is required" });
+    }
+
+    // Build the full file path
+    const filePath = path.join(workspacePath, requestedPath);
+
+    // Security: Prevent path traversal attacks
+    const normalizedPath = path.normalize(filePath);
+    if (!normalizedPath.startsWith(workspacePath)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    // Create subdirectories if they don't exist
+    const dirPath = path.dirname(normalizedPath);
+    if (!fs.existsSync(dirPath)) {
+      fs.mkdirSync(dirPath, { recursive: true });
+    }
+
+    // Collect the file data from the request body
+    const chunks: Buffer[] = [];
+
+    req.on("data", (chunk: Buffer) => {
+      chunks.push(chunk);
+    });
+
+    req.on("end", () => {
+      try {
+        const fileContent = Buffer.concat(chunks);
+
+        // Write the file (overwriting if it exists)
+        fs.writeFileSync(normalizedPath, fileContent);
+
+        // Get file stats for response
+        const stat = fs.statSync(normalizedPath);
+
+        // Return success response with file info
+        res.json({
+          success: true,
+          path: requestedPath,
+          size: stat.size,
+          message: "File uploaded successfully"
+        });
+      } catch (error) {
+        console.error("Error writing file:", error);
+        res.status(500).json({
+          error: "Failed to write file",
+        });
+      }
+    });
+
+    req.on("error", (error) => {
+      console.error("Error receiving file data:", error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: "Error receiving file data" });
+      }
+    });
+  } catch (error) {
+    console.error("Error in upload endpoint:", error);
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: "Internal server error",
+      });
+    }
+  }
+});
+
 router.post("/", async (req, res) => {
   const {
     prompt,

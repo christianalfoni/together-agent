@@ -928,6 +928,7 @@ interface Agent {
   approve: (approvalId: string) => Promise<void>;
   reject: (approvalId: string) => Promise<void>;
   downloadFile: (filePath: string) => Promise<Response>;
+  uploadFile: (filePath: string, content: Buffer | Uint8Array | Blob, contentType?: string) => Promise<Response>;
 }
 ```
 
@@ -1034,6 +1035,124 @@ await agent.reject(message.approvalId);
 **Returns:** `Promise<void>`
 
 **Note:** When an approval is rejected, the tool execution will throw an error and the agent will receive a message that the user declined to proceed.
+
+### `agent.uploadFile(filePath, content, contentType?)`
+
+Upload a file to the agent's workspace. This allows you to send files (images, documents, data files, etc.) to the agent for processing.
+
+```typescript
+const fileBuffer = await fs.promises.readFile('./local-file.pdf');
+const response = await agent.uploadFile('documents/report.pdf', fileBuffer, 'application/pdf');
+const result = await response.json();
+console.log(result); // { success: true, path: 'documents/report.pdf', size: 12345, message: '...' }
+```
+
+**Parameters:**
+- `filePath` (string): Destination path within the workspace directory. Supports subdirectories (e.g., `uploads/images/photo.jpg`)
+- `content` (Buffer | Uint8Array | Blob): The file content to upload
+- `contentType` (string, optional): MIME type of the file (e.g., `'image/png'`, `'application/pdf'`)
+
+**Returns:** `Promise<Response>` - A standard Fetch API Response object with upload result
+
+**Behavior:**
+- Automatically creates subdirectories if they don't exist
+- Overwrites existing files at the same path
+- Files can only be uploaded to the workspace directory
+- Path traversal attempts (e.g., `../../etc/passwd`) are blocked
+
+**Security:**
+- Uploads are authenticated using the agent's host token
+- Files are isolated within the workspace directory
+- Cannot overwrite files outside the workspace
+
+**Example - Upload from browser file input:**
+```typescript
+// React component with file upload
+async function handleFileUpload(file: File) {
+  // Send file to agent
+  const response = await agent.uploadFile(
+    `uploads/${file.name}`,
+    file,
+    file.type
+  );
+
+  const result = await response.json();
+  console.log(`Uploaded: ${result.path} (${result.size} bytes)`);
+
+  // Agent can now process the file via tools
+  for await (const message of agent.prompt(`Analyze the uploaded file: ${file.name}`)) {
+    if (message.type === 'text') {
+      console.log(message.content);
+    }
+  }
+}
+```
+
+**Example - Upload from Node.js:**
+```typescript
+import * as fs from 'fs/promises';
+
+// Upload a local file
+const fileBuffer = await fs.readFile('./data.csv');
+await agent.uploadFile('data/input.csv', fileBuffer, 'text/csv');
+
+// Agent can now process the file
+for await (const message of agent.prompt('Parse the CSV file and summarize the data')) {
+  if (message.type === 'text') {
+    console.log(message.content);
+  }
+}
+```
+
+**Example - Upload to subdirectory:**
+```typescript
+// Create nested directory structure automatically
+await agent.uploadFile('images/avatars/user123.png', imageBuffer, 'image/png');
+await agent.uploadFile('documents/reports/2024/q1.pdf', pdfBuffer, 'application/pdf');
+```
+
+**Example tool that processes uploaded files:**
+```typescript
+// my-agent/analyzeImage.ts
+import { z } from 'zod';
+import { tool } from 'together-agent';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+
+export default tool({
+  discoveryTerms: ['image', 'analyze', 'photo', 'picture', 'vision'],
+  inputSchema: z.object({
+    filename: z.string().describe('Name of the uploaded image file'),
+  }),
+  execute: async (input, context) => {
+    // Read the uploaded file from workspace
+    const filePath = path.join(context.workspacePath, input.filename);
+    const imageBuffer = await fs.readFile(filePath);
+
+    // Process the image (e.g., send to vision API)
+    // ...
+
+    return {
+      success: true,
+      analysis: 'Image contains...'
+    };
+  },
+});
+```
+
+Then use it:
+```typescript
+// User uploads an image via your UI
+const imageFile = document.getElementById('imageInput').files[0];
+await agent.uploadFile(`uploads/${imageFile.name}`, imageFile, imageFile.type);
+
+// Agent processes the uploaded image
+for await (const message of agent.prompt(`Analyze the image I just uploaded: ${imageFile.name}`)) {
+  if (message.type === 'text') {
+    console.log(message.content);
+  }
+}
+```
 
 ### `agent.downloadFile(filePath)`
 
