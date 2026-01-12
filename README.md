@@ -2,6 +2,44 @@
 
 Build AI agents with custom tools powered by Together AI.
 
+## Table of Contents
+
+- [Quick Start](#quick-start)
+- [Defining Your Agent](#defining-your-agent)
+- [How It Works](#how-it-works)
+  - [Architecture](#architecture)
+  - [The Three Native Tools](#the-three-native-tools)
+  - [Execution Flow](#execution-flow)
+  - [Message Streaming](#message-streaming)
+- [Security](#security)
+  - [Code Execution Security](#code-execution-security)
+  - [Secrets Security](#secrets-security)
+  - [Sandbox Isolation](#sandbox-isolation)
+  - [Best Practices](#best-practices)
+- [Secrets Management](#secrets-management)
+  - [Tool Context](#tool-context)
+  - [Accessing Secrets](#accessing-secrets)
+  - [Passing Secrets](#passing-secrets)
+- [Approval System](#approval-system)
+  - [Requesting Approval](#requesting-approval)
+  - [How It Works](#how-it-works-1)
+- [API Reference](#api-reference)
+  - [CLI Commands](#cli-commands)
+  - [Node.js Client](#nodejs-client)
+  - [Tool Definition API](#tool-definition-api)
+- [Best Practices](#best-practices-1)
+  - [Tool Descriptions](#tool-descriptions)
+  - [Error Handling](#error-handling)
+  - [Parallel Tool Execution](#parallel-tool-execution)
+- [Environment Variables](#environment-variables)
+- [Troubleshooting](#troubleshooting)
+- [Examples](#examples)
+  - [Weather Tool](#weather-tool)
+  - [Email Tool with Approval](#email-tool-with-approval)
+  - [Database Query Tool](#database-query-tool)
+  - [File Operations Tool](#file-operations-tool)
+- [License](#license)
+
 ## Quick Start
 
 **1. Install**
@@ -41,372 +79,6 @@ for await (const message of agent.prompt('What is the weather in Tokyo?')) {
   }
 }
 ```
-
-## Security
-
-Together Agent implements multiple layers of security to protect against code injection, secrets exposure, and unauthorized access.
-
-### Code Execution Security
-
-When the AI generates code to call your tools, that code is **never directly executed**. Instead:
-
-1. **AST Parsing** - Generated code is parsed into an Abstract Syntax Tree (AST) before execution
-2. **Static Analysis** - The AST is analyzed to detect and reject dangerous patterns:
-   - No `require()` or `import` statements
-   - No `eval()`, `Function()`, or code generation
-   - No access to `process`, `global`, or other Node.js internals
-   - No filesystem or network access
-3. **Controlled Execution** - Only validated code runs in a restricted JavaScript environment
-
-This prevents the AI from generating malicious code that attempts to access system resources or escape the sandbox.
-
-### Secrets Security
-
-Secrets (API keys, credentials, etc.) are handled with strict isolation:
-
-**How secrets are protected:**
-
-1. **Context-based isolation** - Secrets are passed via the execution context:
-   ```typescript
-   import { tool } from 'together-agent';
-
-   export default tool({
-     discoveryTerms: ['example', 'demo'],
-     inputSchema: z.object({ /* ... */ }),
-     execute: async (input, context) => {
-       const apiKey = context.secrets.API_KEY;  // ✅ Tools can access secrets
-       // ...
-     }
-   })
-   ```
-
-2. **Proxy layer** - When the AI generates code like `tools.getWeather({ location: "Paris" })`, it's calling a **proxy**, not your actual tool:
-   ```
-   AI-generated code → Proxy → Validates input → Calls actual tool with secrets
-   ```
-
-3. **No direct access** - The AI-generated code never sees your tool implementations or secrets:
-   ```javascript
-   // AI generates this:
-   const result = await tools.getWeather({ location: "Paris" });
-
-   // It CANNOT do this (secrets not in scope):
-   const apiKey = context.secrets.API_KEY;  // ❌ ReferenceError
-
-   // It CANNOT do this (no access to tool source):
-   console.log(tools.getWeather.toString());  // ❌ Returns proxy, not real function
-   ```
-
-**Secrets are:**
-- Never stored in code or version control
-- Only accessible during tool execution
-- Isolated from AI-generated code via closures
-- Never included in conversation history or logs
-
-### Sandbox Isolation
-
-Each agent runs in an **isolated CodeSandbox environment per end user**:
-
-- Separate filesystem and process space
-- Network-isolated from other users
-- Temporary execution environment
-- No persistent state between sessions
-
-The security measures above (AST validation, proxy layer, secret isolation) are **additional protections** on top of this sandbox isolation, providing defense-in-depth against potential exploits.
-
-### Best Practices
-
-To maximize security:
-
-1. **Never hardcode secrets** - Always use `context.secrets`
-2. **Request approval for sensitive actions** - Use `context.requestApproval()` for operations like sending emails, making payments, or deleting data
-3. **Validate tool inputs** - Even though inputs are validated against your Zod schema, add additional business logic validation
-4. **Sanitize tool outputs** - If outputs will be displayed to users, sanitize them to prevent XSS or injection attacks
-
----
-
-## Security Best Practices for Tool Developers
-
-When building custom tools for Together Agent, follow these guidelines to ensure your tools remain secure and don't accidentally expose sensitive information.
-
-### 🔴 Critical: Never Log Secrets
-
-**Problem:** Console output from tools is visible to the AI model. If you log secrets, the AI can see them in execution results.
-
-❌ **DON'T DO THIS:**
-```typescript
-import { tool } from 'together-agent';
-
-export default (context) => tool({
-  inputSchema: z.object({ /* ... */ }),
-  execute: async (params) => {
-    const apiKey = context.secrets.API_KEY;
-    console.log("Using API key:", apiKey);  // ❌ DANGEROUS! Exposes secret to AI
-    console.log("Full context:", context);   // ❌ DANGEROUS! Exposes all secrets
-
-    const response = await callAPI(apiKey);
-    return response;
-  }
-})
-```
-
-✅ **DO THIS INSTEAD:**
-```typescript
-import { tool } from 'together-agent';
-
-export default tool({
-  discoveryTerms: ['example', 'demo'],
-  inputSchema: z.object({ /* ... */ }),
-  execute: async (input, context) => {
-    const apiKey = context.secrets.API_KEY;
-    console.log("Calling API...");           // ✅ SAFE - no secret exposed
-
-    const response = await callAPI(apiKey);
-    console.log("API call completed");       // ✅ SAFE - generic message
-    return response;
-  }
-})
-```
-
-**Why this matters:** While the SDK prevents AI-generated code from accessing `context.secrets` directly, YOUR tool code CAN access secrets. If you accidentally log them, they become visible to the AI in the console output.
-
-### 🔴 Critical: Sanitize Error Messages
-
-**Problem:** Error messages are returned to the AI. Exceptions that include secrets or sensitive information will leak them.
-
-❌ **DON'T DO THIS:**
-```typescript
-try {
-  const response = await fetch(url, {
-    headers: { Authorization: `Bearer ${apiKey}` }
-  });
-} catch (error) {
-  // ❌ DANGEROUS! May include the API key in error message
-  throw new Error(`API call failed with key ${apiKey}: ${error.message}`);
-
-  // ❌ DANGEROUS! Stack traces may include file paths and secrets
-  throw error;
-}
-```
-
-✅ **DO THIS INSTEAD:**
-```typescript
-try {
-  const response = await fetch(url, {
-    headers: { Authorization: `Bearer ${apiKey}` }
-  });
-
-  if (!response.ok) {
-    // ✅ SAFE - no secrets, just status info
-    throw new Error(`API request failed: ${response.status} ${response.statusText}`);
-  }
-} catch (error) {
-  // ✅ SAFE - sanitized error message
-  throw new Error(`API call failed: ${error.message}`);
-}
-```
-
-**Best practices for error handling:**
-- Never include secrets in error messages
-- Remove stack traces before throwing
-- Use generic error messages when possible
-- Don't expose internal file paths or system information
-
-### 🟡 Important: Use Approval for Sensitive Actions
-
-**Problem:** Without approval, the AI can perform destructive or costly actions without user confirmation.
-
-**Examples of actions that need approval:**
-- Sending emails
-- Making purchases or payments
-- Deleting data
-- Modifying important records
-- Posting to social media
-- Making expensive API calls
-
-✅ **Implement approval for sensitive actions:**
-```typescript
-import { tool } from 'together-agent';
-
-export default tool({
-  discoveryTerms: ['email', 'send', 'mail', 'message'],
-  inputSchema: z.object({
-    to: z.string(),
-    subject: z.string(),
-    body: z.string(),
-  }),
-  execute: async (input, context) => {
-    // Request approval BEFORE performing the action
-    await context.requestApproval({
-      action: 'send_email',
-      to: input.to,
-      subject: input.subject,
-      body: input.body.substring(0, 200), // Show preview
-      warning: 'This will send a real email to the recipient'
-    });
-
-    // Only proceeds if user approves
-    const apiKey = context.secrets.SENDGRID_API_KEY;
-    await sendEmail(input.to, input.subject, input.body, apiKey);
-
-    return { success: true };
-  }
-})
-```
-
-**When approval is rejected:**
-- The `requestApproval()` call throws an error
-- Tool execution stops immediately
-- AI receives an error message that user declined
-
-### 🟡 Important: Implement Rate Limiting for Expensive Operations
-
-**Problem:** The SDK doesn't limit how many times tools are called. Without rate limiting, the AI could make excessive API calls that cost money.
-
-✅ **Add per-session rate limiting:**
-```typescript
-import { tool } from 'together-agent';
-
-// Simple counter-based rate limiting
-let callCount = 0;
-const MAX_CALLS_PER_SESSION = 10;
-const SESSION_TIMEOUT = 60000; // 1 minute
-
-let sessionStart = Date.now();
-
-export default tool({
-  discoveryTerms: ['search', 'web', 'query', 'find', 'lookup'],
-  inputSchema: z.object({
-    query: z.string(),
-  }),
-  execute: async (input, context) => {
-    // Reset counter if session expired
-    if (Date.now() - sessionStart > SESSION_TIMEOUT) {
-      callCount = 0;
-      sessionStart = Date.now();
-    }
-
-    // Check rate limit
-    if (callCount >= MAX_CALLS_PER_SESSION) {
-      throw new Error('Rate limit exceeded. Maximum 10 searches per minute.');
-    }
-
-    callCount++;
-
-    // Make API call
-    const apiKey = context.secrets.BRAVE_API_KEY;
-    return await searchWeb(input.query, apiKey);
-  }
-})
-```
-
-**For more sophisticated rate limiting:**
-- Use a token bucket algorithm
-- Implement per-user limits (if you track users)
-- Add costs/quotas for different operations
-- Consider using a rate limiting library
-
-### 🟢 Optional: Validate Secrets Early
-
-**Problem:** Missing secrets cause tool execution to fail, wasting time and tokens.
-
-✅ **Check for required secrets immediately:**
-```typescript
-import { tool } from 'together-agent';
-
-export default tool({
-  discoveryTerms: ['example', 'demo'],
-  inputSchema: z.object({ /* ... */ }),
-  execute: async (input, context) => {
-    // Check for required secrets first
-    const apiKey = context.secrets.API_KEY;
-    if (!apiKey) {
-      throw new Error('API_KEY environment variable is required');
-    }
-
-    // Optionally validate format
-    if (!apiKey.startsWith('sk_')) {
-      throw new Error('API_KEY must start with sk_');
-    }
-
-    // Continue with execution
-    return await callAPI(apiKey, input);
-  }
-})
-```
-
-### 🟢 Optional: Return Structured Data
-
-**Problem:** Unstructured data is harder for the AI to work with and may accidentally include sensitive information.
-
-✅ **Return clean, structured objects:**
-```typescript
-import { tool } from 'together-agent';
-
-export default tool({
-  discoveryTerms: ['weather', 'temperature', 'forecast'],
-  inputSchema: z.object({
-    location: z.string(),
-  }),
-  execute: async (input, context) => {
-    const apiKey = context.secrets.WEATHER_API_KEY;
-    const response = await fetch(`https://api.weather.com?location=${input.location}`, {
-      headers: { Authorization: `Bearer ${apiKey}` }
-    });
-
-    const rawData = await response.json();
-
-    // ❌ DON'T: Return entire response (may include metadata, API keys, etc.)
-    // return rawData;
-
-    // ✅ DO: Return only what's needed
-    return {
-      success: true,
-      data: {
-        temperature: rawData.main.temp,
-        condition: rawData.weather[0].description
-      }
-    };
-  }
-})
-```
-
-### Security Checklist for Tool Development
-
-Before deploying your tools, verify:
-
-- [ ] **No secrets in console.log statements**
-- [ ] **No secrets in error messages**
-- [ ] **No secrets in return values** (unless intentionally returned)
-- [ ] **Error messages are sanitized** (no stack traces, file paths)
-- [ ] **Approval required for sensitive actions** (email, payments, deletions)
-- [ ] **Rate limiting implemented** for expensive operations
-- [ ] **Secrets validated early** (clear error messages if missing)
-- [ ] **Return values are structured** (use outputSchema)
-- [ ] **Input validation beyond Zod** (business logic checks)
-- [ ] **API responses are filtered** (only return necessary data)
-
-### What the SDK Protects You From
-
-You don't need to worry about:
-
-✅ **AI accessing secrets directly** - The SDK ensures AI-generated code cannot access `context.secrets`
-✅ **AI importing malicious packages** - `require()` and `import` are blocked
-✅ **AI using eval or code generation** - These functions are forbidden
-✅ **AI accessing system resources** - No access to `process`, `global`, filesystem, etc.
-✅ **AI inspecting tool source code** - Tools are wrapped to hide implementation
-
-### What YOU Need to Protect
-
-You are responsible for:
-
-⚠️ **Not logging secrets** - Console output is visible to AI
-⚠️ **Not including secrets in errors** - Error messages are visible to AI
-⚠️ **Implementing approval flows** - SDK provides the mechanism, you decide when to use it
-⚠️ **Rate limiting expensive operations** - SDK doesn't limit tool calls
-⚠️ **Sanitizing tool outputs** - Ensure returned data doesn't leak sensitive info
-
----
 
 ## Defining Your Agent
 
@@ -623,6 +295,89 @@ Agents stream real-time progress messages via Server-Sent Events (SSE):
 
 ---
 
+## Security
+
+Together Agent implements multiple layers of security to protect against code injection, secrets exposure, and unauthorized access.
+
+### Code Execution Security
+
+When the AI generates code to call your tools, that code is **never directly executed**. Instead:
+
+1. **AST Parsing** - Generated code is parsed into an Abstract Syntax Tree (AST) before execution
+2. **Static Analysis** - The AST is analyzed to detect and reject dangerous patterns:
+   - No `require()` or `import` statements
+   - No `eval()`, `Function()`, or code generation
+   - No access to `process`, `global`, or other Node.js internals
+   - No filesystem or network access
+3. **Controlled Execution** - Only validated code runs in a restricted JavaScript environment
+
+This prevents the AI from generating malicious code that attempts to access system resources or escape the sandbox.
+
+### Secrets Security
+
+Secrets (API keys, credentials, etc.) are handled with strict isolation:
+
+**How secrets are protected:**
+
+1. **Context-based isolation** - Secrets are passed via the execution context:
+   ```typescript
+   import { tool } from 'together-agent';
+
+   export default tool({
+     discoveryTerms: ['example', 'demo'],
+     inputSchema: z.object({ /* ... */ }),
+     execute: async (input, context) => {
+       const apiKey = context.secrets.API_KEY;  // ✅ Tools can access secrets
+       // ...
+     }
+   })
+   ```
+
+2. **Proxy layer** - When the AI generates code like `tools.getWeather({ location: "Paris" })`, it's calling a **proxy**, not your actual tool:
+   ```
+   AI-generated code → Proxy → Validates input → Calls actual tool with secrets
+   ```
+
+3. **No direct access** - The AI-generated code never sees your tool implementations or secrets:
+   ```javascript
+   // AI generates this:
+   const result = await tools.getWeather({ location: "Paris" });
+
+   // It CANNOT do this (secrets not in scope):
+   const apiKey = context.secrets.API_KEY;  // ❌ ReferenceError
+
+   // It CANNOT do this (no access to tool source):
+   console.log(tools.getWeather.toString());  // ❌ Returns proxy, not real function
+   ```
+
+**Secrets are:**
+- Never stored in code or version control
+- Only accessible during tool execution
+- Isolated from AI-generated code via closures
+- Never included in conversation history or logs
+
+### Sandbox Isolation
+
+Each agent runs in an **isolated CodeSandbox environment per end user**:
+
+- Separate filesystem and process space
+- Network-isolated from other users
+- Temporary execution environment
+- No persistent state between sessions
+
+The security measures above (AST validation, proxy layer, secret isolation) are **additional protections** on top of this sandbox isolation, providing defense-in-depth against potential exploits.
+
+### Best Practices
+
+To maximize security:
+
+1. **Never hardcode secrets** - Always use `context.secrets`
+2. **Request approval for sensitive actions** - Use `context.requestApproval()` for operations like sending emails, making payments, or deleting data
+3. **Validate tool inputs** - Even though inputs are validated against your Zod schema, add additional business logic validation
+4. **Sanitize tool outputs** - If outputs will be displayed to users, sanitize them to prevent XSS or injection attacks
+
+---
+
 ## Secrets Management
 
 Tools often need API keys, credentials, or configuration. Together Agent provides a secure way to pass these at runtime.
@@ -707,6 +462,100 @@ Secrets are:
 - Only available during tool execution
 - Not included in conversation history
 
+### Security Best Practices
+
+**🔴 Critical: Never Log Secrets**
+
+Console output from tools is visible to the AI model. If you log secrets, the AI can see them in execution results.
+
+❌ **DON'T DO THIS:**
+```typescript
+execute: async (input, context) => {
+  const apiKey = context.secrets.API_KEY;
+  console.log("Using API key:", apiKey);  // ❌ DANGEROUS! Exposes secret to AI
+  console.log("Full context:", context);   // ❌ DANGEROUS! Exposes all secrets
+
+  const response = await callAPI(apiKey);
+  return response;
+}
+```
+
+✅ **DO THIS INSTEAD:**
+```typescript
+execute: async (input, context) => {
+  const apiKey = context.secrets.API_KEY;
+  console.log("Calling API...");           // ✅ SAFE - no secret exposed
+
+  const response = await callAPI(apiKey);
+  console.log("API call completed");       // ✅ SAFE - generic message
+  return response;
+}
+```
+
+**🔴 Critical: Sanitize Error Messages**
+
+Error messages are returned to the AI. Exceptions that include secrets or sensitive information will leak them.
+
+❌ **DON'T DO THIS:**
+```typescript
+try {
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${apiKey}` }
+  });
+} catch (error) {
+  // ❌ DANGEROUS! May include the API key in error message
+  throw new Error(`API call failed with key ${apiKey}: ${error.message}`);
+
+  // ❌ DANGEROUS! Stack traces may include file paths and secrets
+  throw error;
+}
+```
+
+✅ **DO THIS INSTEAD:**
+```typescript
+try {
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${apiKey}` }
+  });
+
+  if (!response.ok) {
+    // ✅ SAFE - no secrets, just status info
+    throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+  }
+} catch (error) {
+  // ✅ SAFE - sanitized error message
+  throw new Error(`API call failed: ${error.message}`);
+}
+```
+
+**Best practices for error handling:**
+- Never include secrets in error messages
+- Remove stack traces before throwing
+- Use generic error messages when possible
+- Don't expose internal file paths or system information
+
+**🟢 Optional: Validate Secrets Early**
+
+Check for required secrets immediately to provide clear error messages:
+
+```typescript
+execute: async (input, context) => {
+  // Check for required secrets first
+  const apiKey = context.secrets.API_KEY;
+  if (!apiKey) {
+    throw new Error('API_KEY environment variable is required');
+  }
+
+  // Optionally validate format
+  if (!apiKey.startsWith('sk_')) {
+    throw new Error('API_KEY must start with sk_');
+  }
+
+  // Continue with execution
+  return await callAPI(apiKey, input);
+}
+```
+
 ---
 
 ## Approval System
@@ -786,6 +635,48 @@ export default tool({
    - If approved: execution continues
    - If rejected: throws error with message "User declined to proceed"
    - If timeout: throws error "User did not confirm within N seconds"
+
+### When to Use Approval
+
+**🟡 Important: Always use approval for sensitive actions**
+
+Without approval, the AI can perform destructive or costly actions without user confirmation.
+
+**Examples of actions that need approval:**
+- Sending emails
+- Making purchases or payments
+- Deleting data
+- Modifying important records
+- Posting to social media
+- Making expensive API calls
+
+**Example implementation:**
+```typescript
+export default tool({
+  discoveryTerms: ['email', 'send', 'mail', 'message'],
+  inputSchema: z.object({
+    to: z.string(),
+    subject: z.string(),
+    body: z.string(),
+  }),
+  execute: async (input, context) => {
+    // Request approval BEFORE performing the action
+    await context.requestApproval({
+      action: 'send_email',
+      to: input.to,
+      subject: input.subject,
+      body: input.body.substring(0, 200), // Show preview
+      warning: 'This will send a real email to the recipient'
+    });
+
+    // Only proceeds if user approves
+    const apiKey = context.secrets.SENDGRID_API_KEY;
+    await sendEmail(input.to, input.subject, input.body, apiKey);
+
+    return { success: true };
+  }
+})
+```
 
 ---
 
@@ -1443,12 +1334,84 @@ const [weather, news] = await Promise.all([
 
 This is automatic - design tools to be independent when possible.
 
-### Security
+### Rate Limiting
 
-- **Never hardcode secrets** - always use `context.secrets`
-- **Request approval** for sensitive actions (email, payments, deletions)
-- **Validate inputs** thoroughly in your execute function
-- **Sanitize outputs** if they'll be displayed to users
+**🟡 Important: Implement rate limiting for expensive operations**
+
+The SDK doesn't limit how many times tools are called. Without rate limiting, the AI could make excessive API calls that cost money.
+
+**Example implementation:**
+```typescript
+import { tool } from 'together-agent';
+
+// Simple counter-based rate limiting
+let callCount = 0;
+const MAX_CALLS_PER_SESSION = 10;
+const SESSION_TIMEOUT = 60000; // 1 minute
+
+let sessionStart = Date.now();
+
+export default tool({
+  discoveryTerms: ['search', 'web', 'query', 'find', 'lookup'],
+  inputSchema: z.object({
+    query: z.string(),
+  }),
+  execute: async (input, context) => {
+    // Reset counter if session expired
+    if (Date.now() - sessionStart > SESSION_TIMEOUT) {
+      callCount = 0;
+      sessionStart = Date.now();
+    }
+
+    // Check rate limit
+    if (callCount >= MAX_CALLS_PER_SESSION) {
+      throw new Error('Rate limit exceeded. Maximum 10 searches per minute.');
+    }
+
+    callCount++;
+
+    // Make API call
+    const apiKey = context.secrets.BRAVE_API_KEY;
+    return await searchWeb(input.query, apiKey);
+  }
+})
+```
+
+**For more sophisticated rate limiting:**
+- Use a token bucket algorithm
+- Implement per-user limits (if you track users)
+- Add costs/quotas for different operations
+- Consider using a rate limiting library
+
+### Return Structured Data
+
+**🟢 Optional: Return clean, structured objects**
+
+Unstructured data is harder for the AI to work with and may accidentally include sensitive information.
+
+**Example:**
+```typescript
+execute: async (input, context) => {
+  const apiKey = context.secrets.WEATHER_API_KEY;
+  const response = await fetch(`https://api.weather.com?location=${input.location}`, {
+    headers: { Authorization: `Bearer ${apiKey}` }
+  });
+
+  const rawData = await response.json();
+
+  // ❌ DON'T: Return entire response (may include metadata, API keys, etc.)
+  // return rawData;
+
+  // ✅ DO: Return only what's needed
+  return {
+    success: true,
+    data: {
+      temperature: rawData.main.temp,
+      condition: rawData.weather[0].description
+    }
+  };
+}
+```
 
 ---
 
