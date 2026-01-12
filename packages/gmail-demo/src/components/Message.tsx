@@ -33,7 +33,8 @@ export interface AgentMessage {
   terms?: string
   matchedTools?: string[]
   contextSize?: number
-  tokensUsed?: number
+  cumulativeInput?: number
+  cumulativeOutput?: number
   messages?: Array<{
     role: string
     content: any

@@ -9,8 +9,23 @@ if (!fs.existsSync(workspacePath)) {
   fs.mkdirSync(workspacePath, { recursive: true });
 }
 
-// Export workspace path for use in routes
-export { workspacePath };
+// Load custom agent prompt from AGENT.md if it exists in the tools directory
+let customAgentPrompt: string | undefined = undefined;
+const toolsPath = process.env.TOOLS_PATH;
+if (toolsPath) {
+  const agentMdPath = path.join(toolsPath, 'AGENT.md');
+  if (fs.existsSync(agentMdPath)) {
+    try {
+      customAgentPrompt = fs.readFileSync(agentMdPath, 'utf-8').trim();
+      console.log('✓ Loaded custom agent prompt from AGENT.md');
+    } catch (err) {
+      console.error('✗ Failed to read AGENT.md:', err);
+    }
+  }
+}
+
+// Export workspace path and custom prompt for use in routes
+export { workspacePath, customAgentPrompt };
 
 const app = express();
 const PORT = process.env.PORT || 3000;

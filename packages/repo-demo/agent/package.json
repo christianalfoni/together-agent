@@ -1,12 +1,14 @@
 {
-  "name": "my-agent",
+  "name": "agent",
   "version": "1.0.0",
   "type": "module",
   "scripts": {
     "build": "tsc"
   },
   "dependencies": {
-    "zod": "latest"
+    "zod": "latest",
+    "simple-git": "latest",
+    "fast-glob": "latest"
   },
   "devDependencies": {
     "typescript": "latest",

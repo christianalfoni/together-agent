@@ -2,10 +2,11 @@
   "compilerOptions": {
     "target": "ES2020",
     "module": "ESNext",
-    "lib": ["ES2020"],
+    "lib": [
+      "ES2020"
+    ],
     "outDir": "./dist",
     "rootDir": "./",
-    "declaration": false,
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -13,6 +14,11 @@
     "resolveJsonModule": true,
     "moduleResolution": "bundler"
   },
-  "include": ["*.ts"],
-  "exclude": ["node_modules", "dist"]
+  "include": [
+    "*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
 }

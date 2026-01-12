@@ -29,10 +29,9 @@ export function Chat() {
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([])
   const [tokenUsage, setTokenUsage] = useState<{
     contextSize?: number;
-    tokensUsed?: number;
-    totalInputTokens: number;
-    totalOutputTokens: number;
-  }>({ totalInputTokens: 0, totalOutputTokens: 0 })
+    cumulativeInput?: number;
+    cumulativeOutput?: number;
+  }>({})
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -190,12 +189,11 @@ export function Chat() {
 
         // Handle done message for token usage stats
         if (agentMessage.type === 'done') {
-          setTokenUsage((prev) => ({
+          setTokenUsage({
             contextSize: agentMessage.contextSize,
-            tokensUsed: agentMessage.tokensUsed,
-            totalInputTokens: prev.totalInputTokens + (agentMessage.contextSize || 0),
-            totalOutputTokens: prev.totalOutputTokens + (agentMessage.tokensUsed || 0),
-          }))
+            cumulativeInput: agentMessage.cumulativeInput,
+            cumulativeOutput: agentMessage.cumulativeOutput,
+          })
           return // Don't add as message
         }
 
@@ -464,10 +462,10 @@ export function Chat() {
             {/* Divider */}
             <div className="h-4 w-px bg-gray-300" />
 
-            {/* Last turn stats */}
+            {/* Token usage stats */}
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2">
-                <span className="text-gray-500">Last Context:</span>
+                <span className="text-gray-500">Context:</span>
                 <span className={`font-mono font-semibold ${
                   (tokenUsage.contextSize || 0) > 50000
                     ? 'text-red-600'
@@ -482,9 +480,15 @@ export function Chat() {
                 )}
               </div>
               <div className="flex items-center gap-2">
-                <span className="text-gray-500">Last Response:</span>
+                <span className="text-gray-500">Input:</span>
                 <span className="font-mono font-semibold text-gray-800">
-                  {tokenUsage.tokensUsed?.toLocaleString() || 0}
+                  {tokenUsage.cumulativeInput?.toLocaleString() || 0}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-gray-500">Output:</span>
+                <span className="font-mono font-semibold text-gray-800">
+                  {tokenUsage.cumulativeOutput?.toLocaleString() || 0}
                 </span>
               </div>
             </div>

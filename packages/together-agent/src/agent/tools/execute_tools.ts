@@ -7,14 +7,17 @@ const EXECUTION_TIMEOUT_MS = 30000;
 export async function executeTools(
   code: string,
   codeTools: Record<string, any>,
-  addJournalEntry?: (title: string, markdown: string) => Promise<void>
+  addJournalEntry?: (title: string, markdown: string) => Promise<void>,
+  executionContext: Record<string, any> = {}
 ) {
   try {
     // Transform code to ensure all tool calls are awaited
     const transformedCode = ensureToolCallsAreAwaited(code);
 
-    // Validate the code before execution (console is NOT allowed)
-    const validation = validateCode(transformedCode, ["codeTools"]);
+    // Validate the code before execution
+    // Allow codeTools and any keys from executionContext as valid globals
+    const allowedGlobals = ["codeTools", ...Object.keys(executionContext)];
+    const validation = validateCode(transformedCode, allowedGlobals);
     if (!validation.isValid) {
       return {
         result: undefined,
@@ -44,9 +47,13 @@ export async function executeTools(
       wrappedCodeTools[name].execute = wrapper;
     }
 
-    // Create the async function with codeTools in scope
+    // Create the async function with codeTools and executionContext variables in scope
+    // Build parameter names list: codeTools plus all executionContext keys
+    const paramNames = ["codeTools", ...Object.keys(executionContext)];
+    const paramValues = [wrappedCodeTools, ...Object.values(executionContext)];
+
     const asyncFunc = new Function(
-      "codeTools",
+      ...paramNames,
       `return (async () => {
 ${transformedCode}
       })();`
@@ -54,7 +61,7 @@ ${transformedCode}
 
     // Execute with timeout protection and capture the return value
     const result = await Promise.race([
-      asyncFunc(wrappedCodeTools),
+      asyncFunc(...paramValues),
       new Promise((_, reject) =>
         setTimeout(
           () => reject(new Error(`Execution timeout: code took longer than ${EXECUTION_TIMEOUT_MS / 1000} seconds`)),

@@ -80,12 +80,18 @@ export function validateCode(
         node.type === "ExportDefaultDeclaration" ||
         node.type === "ExportAllDeclaration"
       ) {
-        errors.push(`Import/export statements are not allowed: ${node.type}`);
+        errors.push(`Import statements are not supported. Use codeTools to access discovered tools instead.`);
       }
 
       // Check for forbidden identifiers
       if (node.type === "Identifier" && FORBIDDEN_IDENTIFIERS.has(node.name)) {
-        errors.push(`Forbidden identifier: ${node.name}`);
+        if (node.name === "require") {
+          errors.push(`'require()' is not supported. Use codeTools to access discovered tools instead.`);
+        } else if (node.name === "import") {
+          errors.push(`'import' is not supported. Use codeTools to access discovered tools instead.`);
+        } else {
+          errors.push(`Not allowed: '${node.name}' is not available. Use 'codeTools' to access discovered tools.`);
+        }
       }
 
       // Check for member expressions accessing forbidden globals
@@ -94,7 +100,7 @@ export function validateCode(
         node.object.type === "Identifier"
       ) {
         if (FORBIDDEN_IDENTIFIERS.has(node.object.name)) {
-          errors.push(`Access to forbidden object: ${node.object.name}`);
+          errors.push(`Not allowed: '${node.object.name}' is not available. Use 'codeTools' to access discovered tools.`);
         }
       }
 

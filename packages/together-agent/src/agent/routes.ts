@@ -19,7 +19,7 @@ import {
   resolveApproval,
 } from "./approval";
 import { CustomToolDefinition } from "../index";
-import { workspacePath } from "./index";
+import { workspacePath, customAgentPrompt } from "./index";
 import { shouldCompress, performCompression } from "./journal";
 import {
   createReadJournalEntriesTool,
@@ -36,7 +36,11 @@ let sessionState: SessionState = {
   messageToJournals: new Map(),
   lastUserOrAssistantMessage: null,
   lastPromptTokens: 0,
+  cumulativeInputTokens: 0,
+  cumulativeOutputTokens: 0,
   discoveredTools: new Map(),
+  executionContext: {},
+  customPrompt: customAgentPrompt,
 };
 
 /**
@@ -236,8 +240,12 @@ function wrapNativeToolsWithMessages(
       execute: async (params: { terms: string }) => {
         const result = await tools.execute_code_tools_discovery.execute(params);
 
-        // Extract tool names for the message
-        const allMatchedTools = result.tools?.map((t: any) => t.name) || [];
+        // Extract tool names and discovery terms for the message
+        const allMatchedTools =
+          result.tools?.map((t: any) => ({
+            name: t.name,
+            discoveryTerms: t.discoveryTerms || [],
+          })) || [];
 
         // Store discovered tools in session state
         // These will be included in the system prompt on the next turn, making them
@@ -273,7 +281,9 @@ function wrapNativeToolsWithMessages(
       inputSchema: tools.execute_code.inputSchema as any,
       execute: async (params: { code: string }) => {
         // Generate unique execution ID
-        const executionId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+        const executionId = `${Date.now()}-${Math.random()
+          .toString(36)
+          .substring(2, 9)}`;
 
         // Send started message with code BEFORE execution
         sendMessage({
@@ -332,8 +342,14 @@ function wrapNativeToolsWithMessages(
  * - The LLM can reference tool schemas without re-discovering them
  * - Works well with prompt caching after initial discovery
  */
-function generateSystemPrompt(discoveredTools: Map<string, any>): string {
-  const basePrompt = `You are a helpful AI assistant. You are friendly and focused on the user goals.
+function generateSystemPrompt(
+  discoveredTools: Map<string, any>,
+  customBasePrompt?: string
+): string {
+  const basePrompt = `${
+    customBasePrompt ||
+    "You are a helpful AI assistant. You are friendly and focused on the user goals."
+  }
 
 ## Your Primary Capability: Code Execution
 
@@ -349,22 +365,6 @@ For EVERY user request, follow this workflow:
 - Only if NO relevant tools are found should you explain you cannot help
 - Examples of discovery terms: "email", "weather", "file", "database", "api", "pdf", etc.
 
-## Core Agent Loop
-
-Your primary workflow for EVERY user request:
-1. **Discover**: If tools not already discovered, use execute_code_tools_discovery with relevant search terms
-2. **Analyze**: Check what code tools are available in your context
-3. **Compose**: Plan ALL tool calls needed to complete the task
-4. **Execute**: Call execute_code ONCE with ALL tool calls composed together
-5. **Respond**: Format the results naturally for the user
-
-**CRITICAL: Compose tool calls together in a SINGLE execute_code call**
-- DO NOT make multiple separate execute_code calls
-- Plan the entire solution and execute it in one go
-- Use Promise.all() for parallel operations
-- Chain operations when one depends on another
-- This minimizes round trips and is more efficient
-
 ## Tool Usage Guidelines
 
 **IMPORTANT - Internal Tool Mechanics:**
@@ -374,95 +374,51 @@ Your primary workflow for EVERY user request:
 - Tool usage is INTERNAL BEHAVIOR - users should only see natural responses
 - Just perform actions and present results naturally without exposing implementation details
 
-**execute_code Returns JSON:**
-- execute_code returns structured JSON data (not formatted text)
-- YOU format the data in your response to the user
-- Extract the specific fields from the JSON and present them clearly
-- The user does NOT see the raw JSON - only your formatted response
+## Execute Code Guidelines
 
-**Efficiency First:**
-- ALWAYS check recent conversation history for data before making tool calls
-- DO NOT re-fetch data that was already retrieved in recent messages
-- Use tool results from previous turns when answering follow-up questions
+**Sandboxed Execution**
+- import and require is not available or allowed
+- use the global "codeTools" to execute discovered tools
+- You can only use "codeTools" with tools that has been discovered with execute_code_tool_discovery
+
+**Code Tools**
+- Strive to compose execution of code tools into one execute_code
+- Use the output schema of one tool to see how that output can be used as input for an other tool
+- Use Promise.all to run multiple code tools in parallel
+
+**Return value**
+- execute_code returns structured JSON object
+- use the output schema of the code tools to only return what is needed
+- returned JSON object is merged into the global scope of execute code, available to next execute code
 
 **Journal Entries:**
-- Journal entries are for LONG-TERM reference (data from many turns ago or when context is compressed)
-- DO NOT read journal entries for data from the last few turns - it's already in your conversation history
-- Only use read_journal_entries when you need information from much earlier in the conversation
-
-**Code Tool Discovery:**
-- For ANY new task domain, FIRST use execute_code_tools_discovery to find relevant tools
-- Use execute_code_tools_discovery ONCE per tool domain (e.g., once for "weather", once for "email")
-- After discovering code tools, you can use them in execute_code via codeTools object without re-discovering
-- Think broadly about discovery terms - if user asks about anything, try discovering tools for it
-
-**Discovery Decision Tree:**
-1. Is this a task I can solve? → Try discovering tools first
-2. Have I already discovered tools for this domain? → Use them directly in execute_code
-3. Are there no tools discovered yet? → Use execute_code_tools_discovery with relevant search terms
-4. Did discovery return no tools? → Only then explain I cannot help with this task
-
-## Example Conversations
-
-**Example 1: New Request - Discover Tools First**
-User: What's the weather in Trondheim and Oslo?
-Assistant: [First discovers weather code tools with execute_code_tools_discovery("weather")]
-Assistant: [Then executes code with BOTH calls composed:]
-\`\`\`javascript
-const [trondheim, oslo] = await Promise.all([
-  codeTools.getWeather({ city: "Trondheim" }),
-  codeTools.getWeather({ city: "Oslo" })
-])
-await codeTools.addJournalEntry('Weather Query', 'Fetched weather for Trondheim and Oslo')
-return { trondheim, oslo }
-\`\`\`
-Assistant: The weather in Trondheim is 8°C and partly cloudy, while Oslo is 10°C and sunny.
-
-**Example 2: Chaining Operations**
-User: Send the weather report for Trondheim to john@example.com
-Assistant: [discovers weather and email code tools, then composes:]
-\`\`\`javascript
-const weather = await codeTools.getWeather({ city: "Trondheim" })
-const emailResult = await codeTools.sendEmail({
-  to: "john@example.com",
-  subject: "Weather Report",
-  body: \`Temperature: \${weather.temp}°C, Condition: \${weather.condition}\`
-})
-await codeTools.addJournalEntry('Email Task', 'Sent weather report to john@example.com')
-return { weather, emailResult }
-\`\`\`
-Assistant: I've sent the weather report for Trondheim (8°C, partly cloudy) to john@example.com.
-
-**Example 3: Using Previous Data**
-User: Compare them
-Assistant: [uses data from previous messages - NO need to fetch again]
-Assistant: Trondheim is cooler at 8°C vs Oslo at 10°C. Trondheim is cloudier with higher humidity (72% vs 65%).
-
-**Example 4: Unknown Request - Discover First, Don't Refuse**
-User: Can you generate a PDF report?
-Assistant: [CORRECT: discovers tools first with execute_code_tools_discovery("pdf generate document")]
-Assistant: [If tools found] I'll generate that PDF report for you.
-Assistant: [If NO tools found] I don't have access to PDF generation tools at the moment.
-
-**REMEMBER:**
-- ALWAYS discover tools before saying you can't do something
-- Your primary capability is executing code with discovered tools
-- Compose multiple code tool calls together in a single execute_code
-- Be proactive - try discovering tools for any reasonable user request
+- Always add journal entries when executing code and fill it up with data from the code execution for later reference
+- Journal entries are for LONG-TERM reference (for when context is compressed)
+- Only use read_journal_entries when you need information from a journal entry in the conversation history
 `;
 
   // Add discovered code tools section
   let toolsSection = "\n## Discovered Code Tools (for use in execute_code)\n\n";
 
   if (discoveredTools.size === 0) {
-    toolsSection += "No code tools have been discovered yet. Use execute_code_tools_discovery to find code tools available for execute_code.\n";
+    toolsSection +=
+      "No code tools have been discovered yet. Use execute_code_tools_discovery to find code tools available for execute_code.\n";
   } else {
-    toolsSection += "The following code tools have been discovered and are available for use in execute_code via codeTools:\n\n";
+    toolsSection +=
+      "The following code tools have been discovered and are available for use in execute_code via codeTools:\n\n";
 
     for (const [name, tool] of discoveredTools.entries()) {
       toolsSection += `### ${name}\n\n`;
-      toolsSection += `**Input Schema:**\n\`\`\`json\n${JSON.stringify(tool.inputSchema, null, 2)}\n\`\`\`\n\n`;
-      toolsSection += `**Output Schema:**\n\`\`\`json\n${JSON.stringify(tool.outputSchema, null, 2)}\n\`\`\`\n\n`;
+      toolsSection += `**Input Schema:**\n\`\`\`json\n${JSON.stringify(
+        tool.inputSchema,
+        null,
+        2
+      )}\n\`\`\`\n\n`;
+      toolsSection += `**Output Schema:**\n\`\`\`json\n${JSON.stringify(
+        tool.outputSchema,
+        null,
+        2
+      )}\n\`\`\`\n\n`;
     }
   }
 
@@ -627,7 +583,7 @@ router.put("/files/*filepath", (req, res) => {
           success: true,
           path: requestedPath,
           size: stat.size,
-          message: "File uploaded successfully"
+          message: "File uploaded successfully",
         });
       } catch (error) {
         console.error("Error writing file:", error);
@@ -740,7 +696,10 @@ router.post("/", async (req, res) => {
     // complete schemas (including outputSchema, which the formal tools array doesn't support).
     // Since tool discovery happens mostly at conversation start, this is efficient and avoids
     // the need for the LLM to re-discover tools it has already found.
-    const systemPromptContent = generateSystemPrompt(sessionState.discoveredTools);
+    const systemPromptContent = generateSystemPrompt(
+      sessionState.discoveredTools,
+      sessionState.customPrompt
+    );
 
     if (sessionState.messages.length === 0) {
       // First message - add system message
@@ -791,7 +750,15 @@ router.post("/", async (req, res) => {
     );
 
     // Create code tools (native tools) with wrapped custom tools and addJournalEntry
-    const codeTools = createCodeTools(wrappedCustomTools, addJournalEntry);
+    const codeTools = createCodeTools(
+      wrappedCustomTools,
+      addJournalEntry,
+      () => sessionState.executionContext,
+      (newContext) => {
+        sessionState.executionContext = newContext;
+      },
+      () => new Set(sessionState.discoveredTools.keys())
+    );
 
     // Wrap native tools to send completion messages and convert to AI SDK format
     const wrappedNativeTools = {
@@ -809,10 +776,15 @@ router.post("/", async (req, res) => {
     };
 
     // Filter out execute_code_tools_discovery and execute_code requests (keep only results)
-    const filterInternalToolCalls = (messages: CoreMessage[]): CoreMessage[] => {
+    const filterInternalToolCalls = (
+      messages: CoreMessage[]
+    ): CoreMessage[] => {
       return messages.map((message) => {
         // Only filter assistant messages with content arrays
-        if (message.role !== "assistant" || typeof message.content === "string") {
+        if (
+          message.role !== "assistant" ||
+          typeof message.content === "string"
+        ) {
           return message;
         }
 
@@ -825,7 +797,10 @@ router.post("/", async (req, res) => {
           if (part.type === "tool-call") {
             const toolName = part.toolName;
             // Filter out internal tool calls
-            return toolName !== "execute_code_tools_discovery" && toolName !== "execute_code";
+            return (
+              toolName !== "execute_code_tools_discovery" &&
+              toolName !== "execute_code"
+            );
           }
           // Keep all other content (text, tool-result, etc.)
           return true;
@@ -859,7 +834,7 @@ router.post("/", async (req, res) => {
       model: together("moonshotai/Kimi-K2-Instruct-0905"),
       messages: cleanedMessages, // CoreMessages are already in the right format
       tools: wrappedNativeTools,
-      stopWhen: stepCountIs(20),
+      stopWhen: stepCountIs(40),
       temperature: 0.1,
     });
 
@@ -909,10 +884,19 @@ router.post("/", async (req, res) => {
     // Get usage from result.usage (not finalResponse.usage)
     const usage = await result.usage;
 
-    // Track token usage for compression
-    if (usage?.inputTokens) {
-      sessionState.lastPromptTokens = usage.inputTokens;
-    }
+    // Get step count (number of turns used in this request)
+    const stepCount = (finalResponse as any).stepCount || 0;
+
+    // Track token usage for compression and cumulative stats
+    const currentInputTokens = usage?.inputTokens || 0;
+    const currentOutputTokens = usage?.outputTokens || 0;
+
+    // Update cumulative totals (for cost tracking)
+    sessionState.cumulativeInputTokens += currentInputTokens;
+    sessionState.cumulativeOutputTokens += currentOutputTokens;
+
+    // Update last prompt tokens for compression check
+    sessionState.lastPromptTokens = currentInputTokens;
 
     // finalMessages contains ONLY the NEW messages from this turn (not the full conversation)
     // So we can just append them all directly to sessionState.messages
@@ -929,7 +913,8 @@ router.post("/", async (req, res) => {
       // No new messages - add placeholder to prevent consecutive user messages
       const placeholderMessage: CoreMessage = {
         role: "assistant",
-        content: "I encountered an issue processing your request. Please try again.",
+        content:
+          "I encountered an issue processing your request. Please try again.",
       };
       sessionState.messages.push(placeholderMessage);
       sessionState.lastUserOrAssistantMessage = placeholderMessage;
@@ -954,7 +939,8 @@ router.post("/", async (req, res) => {
         role: msg.role,
         content:
           typeof msg.content === "string"
-            ? msg.content.slice(0, 200) + (msg.content.length > 200 ? "..." : "")
+            ? msg.content.slice(0, 200) +
+              (msg.content.length > 200 ? "..." : "")
             : Array.isArray(msg.content)
             ? msg.content.map((c: any) => {
                 if (c.type === "text") {
@@ -965,11 +951,12 @@ router.post("/", async (req, res) => {
                   // Show actual tool result data, not just the ID
                   // AI SDK stores results in output.value
                   const actualResult = c.output?.value ?? c.result;
-                  const resultPreview = actualResult === undefined
-                    ? "undefined"
-                    : typeof actualResult === "string"
-                    ? actualResult.slice(0, 100)
-                    : JSON.stringify(actualResult)?.slice(0, 100) || "null";
+                  const resultPreview =
+                    actualResult === undefined
+                      ? "undefined"
+                      : typeof actualResult === "string"
+                      ? actualResult.slice(0, 100)
+                      : JSON.stringify(actualResult)?.slice(0, 100) || "null";
                   return `[tool-result: ${c.toolCallId} | result: ${resultPreview}...]`;
                 }
                 return `[${c.type}]`;
@@ -979,11 +966,14 @@ router.post("/", async (req, res) => {
       messageCount: messagesBeingsent.length,
     });
 
-    // Send done message with token usage info
+    // Send done message with token usage and turn info
     sendMessageNow({
       type: "done",
-      contextSize: usage?.inputTokens,
-      tokensUsed: usage?.outputTokens,
+      contextSize: currentInputTokens, // Current conversation size (will decrease after compression)
+      cumulativeInput: sessionState.cumulativeInputTokens, // Total input tokens (always increases)
+      cumulativeOutput: sessionState.cumulativeOutputTokens, // Total output tokens (always increases)
+      turns: stepCount,
+      totalTurns: 40,
     });
 
     res.end();

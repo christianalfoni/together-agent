@@ -3,15 +3,21 @@ import { CustomToolDefinition } from "../../index";
 
 export function discoverToolsInMemory(
   query: string,
-  tools: Record<string, CustomToolDefinition>
+  tools: Record<string, CustomToolDefinition>,
+  alreadyDiscovered: Set<string> = new Set()
 ) {
   try {
-    const matchedTools: Array<{ name: string; inputSchema: any; outputSchema: any; matchCount: number }> = [];
+    const matchedTools: Array<{ name: string; inputSchema: any; outputSchema: any; discoveryTerms: string[]; matchCount: number }> = [];
     // Split query into individual words and create regex for each
     const queryWords = query.split(/\s+/).filter(word => word.length > 0);
     const regexes = queryWords.map(word => new RegExp(word, "i"));
 
     for (const [name, tool] of Object.entries(tools)) {
+      // Skip tools that are already discovered and in the system prompt
+      if (alreadyDiscovered.has(name)) {
+        continue;
+      }
+
       // Convert Zod schemas to JSON Schema and ensure they're fully serializable
       const inputSchemaJson = z.toJSONSchema(tool.inputSchema);
       const outputSchemaJson = z.toJSONSchema(tool.outputSchema);
@@ -38,6 +44,7 @@ export function discoverToolsInMemory(
           name,
           inputSchema: cleanInputSchema,
           outputSchema: cleanOutputSchema,
+          discoveryTerms: tool.discoveryTerms,
           matchCount,
         });
       }
@@ -47,10 +54,11 @@ export function discoverToolsInMemory(
     matchedTools.sort((a, b) => b.matchCount - a.matchCount);
 
     // Remove matchCount before returning (internal scoring only)
-    const sortedTools = matchedTools.map(({ name, inputSchema, outputSchema }) => ({
+    const sortedTools = matchedTools.map(({ name, inputSchema, outputSchema, discoveryTerms }) => ({
       name,
       inputSchema,
-      outputSchema
+      outputSchema,
+      discoveryTerms
     }));
 
     return { tools: sortedTools };

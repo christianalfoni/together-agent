@@ -17,7 +17,10 @@ export type AgentMessage =
 export interface ExecuteCodeToolsDiscoveryMessage {
   type: "execute_code_tools_discovery";
   terms: string;
-  matchedTools: string[];
+  matchedTools: Array<{
+    name: string;
+    discoveryTerms: string[];
+  }>;
 }
 
 export interface CodeExecutionStartedMessage {
@@ -59,8 +62,12 @@ export interface ErrorMessage {
 
 export interface DoneMessage {
   type: "done";
-  contextSize?: number;
-  tokensUsed?: number;
+  // Token breakdown for cost tracking
+  contextSize?: number;  // Current conversation size (can decrease after compression)
+  cumulativeInput?: number;  // Total input tokens sent across all turns
+  cumulativeOutput?: number;  // Total output tokens generated across all turns
+  turns?: number;
+  totalTurns?: number;
 }
 
 export interface DebugMessage {
@@ -138,6 +145,10 @@ export interface SessionState {
   journalEntries: JournalEntry[];
   messageToJournals: Map<any, number[]>;  // Maps message object to journal entry indices
   lastUserOrAssistantMessage: any | null;  // Track last user/assistant message for journal attachment
-  lastPromptTokens: number;
+  lastPromptTokens: number;  // Input tokens from last turn (for compression check)
+  cumulativeInputTokens: number;  // Total input tokens sent across all turns (for cost tracking)
+  cumulativeOutputTokens: number;  // Total output tokens generated across all turns (for cost tracking)
   discoveredTools: Map<string, DiscoveredTool>;  // Maps tool name to tool definition
+  executionContext: Record<string, any>;  // Accumulated variables from code executions - returned values become available as globals
+  customPrompt?: string;  // Custom base prompt from AGENT.md (loaded once at start)
 }

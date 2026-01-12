@@ -45,7 +45,6 @@ program
         build: "tsc",
       },
       dependencies: {
-        "together-agent": "latest",
         zod: "latest",
       },
       devDependencies: {
@@ -192,6 +191,14 @@ program
           process.exit(1);
         }
 
+        // Copy AGENT.md if it exists in the source folder
+        const sourceAgentMd = path.join(absoluteToolsPath, "AGENT.md");
+        if (fs.existsSync(sourceAgentMd)) {
+          const destAgentMd = path.join(toolsRuntimePath, "AGENT.md");
+          fs.copyFileSync(sourceAgentMd, destAgentMd);
+          console.log("✓ Copied AGENT.md to dist folder");
+        }
+
         console.log("✓ Tools compiled successfully");
       } catch (error) {
         console.error("Failed to compile TypeScript tools");
@@ -301,6 +308,9 @@ program
           let buffer = "";
           let hasError = false;
 
+          // Track custom tool calls to show them as single entries
+          const pendingToolCalls = new Map<string, { toolName: string; args: any }>();
+
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
@@ -362,9 +372,10 @@ program
                     case "execute_code_tools_discovery":
                       console.log("\n" + "─".repeat(70));
                       console.log("🔍 CODE TOOLS DISCOVERY (for execute_code)");
-                      console.log(`Terms: ${message.terms}`);
+                      console.log(`Search terms: "${message.terms}"`);
                       if (message.matchedTools.length > 0) {
-                        console.log(`Matched code tools: ${message.matchedTools.join(", ")}`);
+                        const toolNames = message.matchedTools.map((tool: { name: string }) => tool.name).join(", ");
+                        console.log(`Matched tools: ${toolNames}`);
                       } else {
                         console.log("No code tools matched");
                       }
@@ -417,30 +428,29 @@ program
                       break;
 
                     case "custom_tool_call_started":
-                      // Custom tools starting
-                      console.log("\n" + "─".repeat(70));
-                      console.log(`▶️  ${message.toolName.toUpperCase()} - STARTED`);
-                      if (message.args) {
-                        console.log(JSON.stringify(message.args, null, 2));
-                      }
-                      console.log("─".repeat(70));
+                      // Store the tool call info to display when completed
+                      pendingToolCalls.set(message.callId, {
+                        toolName: message.toolName,
+                        args: message.args,
+                      });
                       break;
 
                     case "custom_tool_call_completed":
-                      // Custom tools completing
-                      console.log("\n" + "─".repeat(70));
-                      if (message.error) {
-                        console.log(`❌ ${message.toolName.toUpperCase()} - ERROR`);
-                        console.log("Error:", message.error);
-                      } else {
-                        console.log(`✅ ${message.toolName.toUpperCase()} - COMPLETED`);
-                        if (message.result !== undefined) {
-                          console.log("Result:", typeof message.result === 'object'
-                            ? JSON.stringify(message.result, null, 2)
-                            : message.result);
+                      // Show tool call as single entry with status and input
+                      const toolCall = pendingToolCalls.get(message.callId);
+                      if (toolCall) {
+                        console.log("\n" + "─".repeat(70));
+                        if (message.error) {
+                          console.log(`❌ ${toolCall.toolName.toUpperCase()} - Error: ${message.error}`);
+                        } else {
+                          console.log(`✅ ${toolCall.toolName.toUpperCase()}`);
                         }
+                        if (toolCall.args) {
+                          console.log(JSON.stringify(toolCall.args, null, 2));
+                        }
+                        console.log("─".repeat(70));
+                        pendingToolCalls.delete(message.callId);
                       }
-                      console.log("─".repeat(70));
                       break;
 
                     case "text":
@@ -460,10 +470,14 @@ program
 
                     case "done":
                       // Display usage info if available
-                      if (message.contextSize !== undefined || message.tokensUsed !== undefined) {
-                        const contextInfo = message.contextSize !== undefined ? `Context: ${message.contextSize.toLocaleString()} tokens` : '';
-                        const tokensInfo = message.tokensUsed !== undefined ? `Used: ${message.tokensUsed.toLocaleString()} tokens` : '';
-                        const parts = [contextInfo, tokensInfo].filter(Boolean);
+                      if (message.contextSize !== undefined || message.cumulativeInput !== undefined || message.cumulativeOutput !== undefined) {
+                        const contextInfo = message.contextSize !== undefined ? `Context: ${message.contextSize.toLocaleString()}` : '';
+                        const inputInfo = message.cumulativeInput !== undefined ? `Input: ${message.cumulativeInput.toLocaleString()}` : '';
+                        const outputInfo = message.cumulativeOutput !== undefined ? `Output: ${message.cumulativeOutput.toLocaleString()}` : '';
+                        const turnsInfo = message.turns !== undefined && message.totalTurns !== undefined
+                          ? `Turns: ${message.turns}/${message.totalTurns}`
+                          : '';
+                        const parts = [contextInfo, inputInfo, outputInfo, turnsInfo].filter(Boolean);
                         if (parts.length > 0) {
                           console.log(`\x1b[90m${parts.join(' | ')}\x1b[0m`); // Gray text
                         }
@@ -569,6 +583,13 @@ program
       buildSpinner.stop(false);
       console.error(`Error: Compilation succeeded but dist folder not found at ${compiledToolsPath}`);
       process.exit(1);
+    }
+
+    // Copy AGENT.md if it exists in the source folder
+    const sourceAgentMd = path.join(absoluteToolsPath, "AGENT.md");
+    if (fs.existsSync(sourceAgentMd)) {
+      const destAgentMd = path.join(compiledToolsPath, "AGENT.md");
+      fs.copyFileSync(sourceAgentMd, destAgentMd);
     }
 
     buildSpinner.stop(true, "Agent built successfully");
