@@ -11,6 +11,78 @@ import { config as dotenvConfig } from "dotenv";
 
 const program = new Command();
 
+// Helper function to build an agent from tools directory
+interface BuildAgentOptions {
+  verbose?: boolean;
+}
+
+function buildAgent(
+  toolsPath: string,
+  outputPath: string = "dist",
+  options: BuildAgentOptions = {}
+): string {
+  const absoluteToolsPath = path.resolve(toolsPath);
+  const absoluteOutputPath = path.isAbsolute(outputPath)
+    ? outputPath
+    : path.join(absoluteToolsPath, outputPath);
+
+  // Check if the tools directory exists
+  if (!fs.existsSync(absoluteToolsPath)) {
+    throw new Error(`Tools directory not found: ${absoluteToolsPath}`);
+  }
+
+  if (!fs.statSync(absoluteToolsPath).isDirectory()) {
+    throw new Error(`Tools path is not a directory: ${absoluteToolsPath}`);
+  }
+
+  // Check if tsconfig.json exists
+  const hasTsConfig = fs.existsSync(
+    path.join(absoluteToolsPath, "tsconfig.json")
+  );
+
+  if (!hasTsConfig) {
+    throw new Error(
+      `No tsconfig.json found at ${absoluteToolsPath}. Please initialize the project with 'together-agent init' first.`
+    );
+  }
+
+  if (options.verbose) {
+    console.log("Compiling TypeScript tools...");
+  }
+
+  try {
+    // Compile with custom outDir
+    execSync(`npx tsc --outDir "${absoluteOutputPath}"`, {
+      cwd: absoluteToolsPath,
+      stdio: options.verbose ? "inherit" : "pipe",
+    });
+
+    if (!fs.existsSync(absoluteOutputPath)) {
+      throw new Error(
+        `Compilation succeeded but output folder not found at ${absoluteOutputPath}`
+      );
+    }
+
+    // Copy AGENT.md if it exists in the source folder
+    const sourceAgentMd = path.join(absoluteToolsPath, "AGENT.md");
+    if (fs.existsSync(sourceAgentMd)) {
+      const destAgentMd = path.join(absoluteOutputPath, "AGENT.md");
+      fs.copyFileSync(sourceAgentMd, destAgentMd);
+      if (options.verbose) {
+        console.log("✓ Copied AGENT.md to output folder");
+      }
+    }
+
+    if (options.verbose) {
+      console.log("✓ Tools compiled successfully");
+    }
+
+    return absoluteOutputPath;
+  } catch (error) {
+    throw new Error("Failed to compile TypeScript tools");
+  }
+}
+
 program
   .name("together-agent")
   .description("A TypeScript CLI SDK")
@@ -130,6 +202,23 @@ export default tool({
   });
 
 program
+  .command("build")
+  .description("Build the agent (compile TypeScript tools)")
+  .argument("<tools-path>", "path to the tools directory")
+  .argument("[output-path]", "output directory for compiled tools", "dist")
+  .action((toolsPath: string, outputPath: string) => {
+    try {
+      const runtimePath = buildAgent(toolsPath, outputPath, { verbose: true });
+      console.log(`\n✓ Agent built successfully at: ${runtimePath}`);
+    } catch (error) {
+      console.error(
+        `\nError: ${error instanceof Error ? error.message : error}`
+      );
+      process.exit(1);
+    }
+  });
+
+program
   .command("run")
   .description("Run the agent server and send a prompt")
   .argument("<tools-path>", "path to the tools directory")
@@ -158,52 +247,21 @@ program
       process.exit(1);
     }
 
-    // Resolve the tools path to absolute
+    // Build the agent to dist directory (so node_modules can be resolved)
     const absoluteToolsPath = path.resolve(toolsPath);
+    const buildPath = path.join(absoluteToolsPath, "dist");
 
-    // Check if the tools directory exists
-    if (!fs.existsSync(absoluteToolsPath)) {
-      console.error(`Error: Tools directory not found: ${absoluteToolsPath}`);
-      process.exit(1);
+    // Remove existing dist directory to ensure clean build
+    if (fs.existsSync(buildPath)) {
+      fs.rmSync(buildPath, { recursive: true, force: true });
     }
 
-    if (!fs.statSync(absoluteToolsPath).isDirectory()) {
-      console.error(`Error: Tools path is not a directory: ${absoluteToolsPath}`);
+    let toolsRuntimePath: string;
+    try {
+      toolsRuntimePath = buildAgent(toolsPath, buildPath, { verbose: true });
+    } catch (error) {
+      console.error(`Error: ${error instanceof Error ? error.message : error}`);
       process.exit(1);
-    }
-
-    // Check if tools are TypeScript and need compilation
-    const hasTsConfig = fs.existsSync(path.join(absoluteToolsPath, "tsconfig.json"));
-    let toolsRuntimePath = absoluteToolsPath;
-
-    if (hasTsConfig) {
-      console.log("Compiling TypeScript tools...");
-      try {
-        execSync("npm run build", {
-          cwd: absoluteToolsPath,
-          stdio: "inherit",
-        });
-        // Point to the compiled output directory
-        toolsRuntimePath = path.join(absoluteToolsPath, "dist");
-
-        if (!fs.existsSync(toolsRuntimePath)) {
-          console.error(`Error: Compilation succeeded but dist folder not found at ${toolsRuntimePath}`);
-          process.exit(1);
-        }
-
-        // Copy AGENT.md if it exists in the source folder
-        const sourceAgentMd = path.join(absoluteToolsPath, "AGENT.md");
-        if (fs.existsSync(sourceAgentMd)) {
-          const destAgentMd = path.join(toolsRuntimePath, "AGENT.md");
-          fs.copyFileSync(sourceAgentMd, destAgentMd);
-          console.log("✓ Copied AGENT.md to dist folder");
-        }
-
-        console.log("✓ Tools compiled successfully");
-      } catch (error) {
-        console.error("Failed to compile TypeScript tools");
-        process.exit(1);
-      }
     }
 
     console.log(`Starting agent server on port ${port}...`);
@@ -525,27 +583,7 @@ program
   .description("Deploy the agent to CodeSandbox")
   .argument("<tools-path>", "path to the tools directory")
   .action((toolsPath: string) => {
-    // Resolve the tools path to absolute
     const absoluteToolsPath = path.resolve(toolsPath);
-
-    // Check if the tools directory exists
-    if (!fs.existsSync(absoluteToolsPath)) {
-      console.error(`Error: Tools directory not found: ${absoluteToolsPath}`);
-      process.exit(1);
-    }
-
-    if (!fs.statSync(absoluteToolsPath).isDirectory()) {
-      console.error(`Error: Tools path is not a directory: ${absoluteToolsPath}`);
-      process.exit(1);
-    }
-
-    // Check if tools are TypeScript
-    const hasTsConfig = fs.existsSync(path.join(absoluteToolsPath, "tsconfig.json"));
-
-    if (!hasTsConfig) {
-      console.error("Error: No tsconfig.json found. Tools must be written in TypeScript.");
-      process.exit(1);
-    }
 
     // Helper function to show spinner
     const spinner = (message: string) => {
@@ -565,37 +603,27 @@ program
       };
     };
 
-    // Compile TypeScript tools
+    // Build the agent to dist directory (so node_modules can be resolved)
     const buildSpinner = spinner("Building agent...");
+    const buildPath = path.join(absoluteToolsPath, "dist");
+
+    // Remove existing dist directory to ensure clean build
+    if (fs.existsSync(buildPath)) {
+      fs.rmSync(buildPath, { recursive: true, force: true });
+    }
+
+    let compiledToolsPath: string;
     try {
-      execSync("npm run build", {
-        cwd: absoluteToolsPath,
-        stdio: "pipe",
-      });
+      compiledToolsPath = buildAgent(toolsPath, buildPath, { verbose: false });
+      buildSpinner.stop(true, "Agent built successfully");
     } catch (error) {
       buildSpinner.stop(false);
-      console.error("Failed to compile TypeScript tools");
+      console.error(`Error: ${error instanceof Error ? error.message : error}`);
       process.exit(1);
     }
 
-    const compiledToolsPath = path.join(absoluteToolsPath, "dist");
-    if (!fs.existsSync(compiledToolsPath)) {
-      buildSpinner.stop(false);
-      console.error(`Error: Compilation succeeded but dist folder not found at ${compiledToolsPath}`);
-      process.exit(1);
-    }
-
-    // Copy AGENT.md if it exists in the source folder
-    const sourceAgentMd = path.join(absoluteToolsPath, "AGENT.md");
-    if (fs.existsSync(sourceAgentMd)) {
-      const destAgentMd = path.join(compiledToolsPath, "AGENT.md");
-      fs.copyFileSync(sourceAgentMd, destAgentMd);
-    }
-
-    buildSpinner.stop(true, "Agent built successfully");
-
-    // Create a temp folder
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "together-agent-"));
+    // Create a temp folder for deployment
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "together-agent-deploy-"));
 
     try {
       // Copy the agent folder from dist first
@@ -698,8 +726,9 @@ program
       buildProcess.on("close", (code) => {
         deploySpinner.stop(code === 0, "Agent deployed successfully");
 
-        // Clean up temp directory
+        // Clean up temp deployment directory and build directory
         fs.rmSync(tempDir, { recursive: true, force: true });
+        fs.rmSync(buildPath, { recursive: true, force: true });
 
         if (code !== 0 && code !== null) {
           console.error("\nDeployment failed!");
@@ -726,11 +755,13 @@ program
         deploySpinner.stop(false);
         buildProcess.kill();
         fs.rmSync(tempDir, { recursive: true, force: true });
+        fs.rmSync(buildPath, { recursive: true, force: true });
         process.exit(0);
       });
     } catch (error) {
       // Clean up on error
       fs.rmSync(tempDir, { recursive: true, force: true });
+      fs.rmSync(buildPath, { recursive: true, force: true });
       throw error;
     }
   });

@@ -2,7 +2,6 @@ import { Router } from "express";
 import { createTogetherAI } from "@ai-sdk/togetherai";
 import { streamText, stepCountIs, tool as aiSDKTool, CoreMessage } from "ai";
 import { createCodeTools } from "./tools";
-import { executeTools } from "./tools/execute_tools";
 import * as fs from "fs";
 import * as path from "path";
 import { pathToFileURL } from "url";
@@ -357,7 +356,8 @@ function generateSystemPrompt(
 
 For EVERY user request, follow this workflow:
 1. **Discover**: Use execute_code_tools_discovery to find relevant code tools for the task
-2. **Execute**: Use execute_code to call the discovered tools via codeTools object
+2. **Execute**: Find the optimal composition of code tools discovered using their output schema to write efficient
+code for execute_code
 3. **Respond**: Format the results naturally for the user
 
 **CRITICAL: NEVER say you can't do something without first discovering tools**
@@ -374,27 +374,111 @@ For EVERY user request, follow this workflow:
 - Tool usage is INTERNAL BEHAVIOR - users should only see natural responses
 - Just perform actions and present results naturally without exposing implementation details
 
-## Execute Code Guidelines
+## execute_code Guidelines
 
 **Sandboxed Execution**
 - import and require is not available or allowed
 - use the global "codeTools" to execute discovered tools
 - You can only use "codeTools" with tools that has been discovered with execute_code_tool_discovery
 
-**Code Tools**
-- Strive to compose execution of code tools into one execute_code
-- Use the output schema of one tool to see how that output can be used as input for an other tool
-- Use Promise.all to run multiple code tools in parallel
+**Code Tools Execution Patterns**
 
-**Return value**
-- execute_code returns structured JSON object
-- use the output schema of the code tools to only return what is needed
-- returned JSON object is merged into the global scope of execute code, available to next execute code
+Example 1: Chaining tools using output schemas
+\`\`\`javascript
+// User asks: "What's the weather in my current city?"
+// Tools discovered: getUserLocation, getWeather
 
-**Journal Entries:**
-- Always add journal entries when executing code and fill it up with data from the code execution for later reference
-- Journal entries are for LONG-TERM reference (for when context is compressed)
-- Only use read_journal_entries when you need information from a journal entry in the conversation history
+const location = await codeTools.getUserLocation();
+// Output schema tells us location returns { city: string, country: string }
+
+const weather = await codeTools.getWeather({
+  city: location.city
+});
+
+await addJournalEntry("Weather Query", \`
+Location: \${location.city}, \${location.country}
+Weather: \${weather.temperature}°C, \${weather.condition}
+\`);
+
+return { city: location.city, weather: weather.condition };
+\`\`\`
+
+Example 2: Parallel execution for independent operations
+\`\`\`javascript
+// User asks: "Get me data from all three databases"
+// Tools discovered: queryUserDB, queryAnalyticsDB, queryInventoryDB
+
+const [users, analytics, inventory] = await Promise.all([
+  codeTools.queryUserDB({ table: "active_users" }),
+  codeTools.queryAnalyticsDB({ metric: "daily_visits" }),
+  codeTools.queryInventoryDB({ status: "in_stock" })
+]);
+
+await addJournalEntry("Database Report", \`
+Users: \${users.count} active
+Analytics: \${analytics.visits} daily visits
+Inventory: \${inventory.items.length} items in stock
+\`);
+
+return { users, analytics, inventory };
+\`\`\`
+
+Example 3: Complex nested workflow with deduplication
+\`\`\`javascript
+// User asks: "Get all posts with their comments and comment authors"
+// Tools discovered: getPosts, getComments, getUser
+
+const posts = await codeTools.getPosts({ limit: 10 });
+// Output schema: { posts: Array<{ id: string, title: string }> }
+
+// Fetch comments for all posts in parallel
+const commentsPerPost = await Promise.all(
+  posts.posts.map(post =>
+    codeTools.getComments({ postId: post.id })
+  )
+);
+// Output schema: { comments: Array<{ id: string, userId: string, text: string }> }
+
+// Collect unique user IDs to avoid duplicate fetches
+const userIds = new Set();
+commentsPerPost.forEach(result => {
+  result.comments.forEach(comment => {
+    userIds.add(comment.userId);
+  });
+});
+
+// Fetch all unique users in parallel
+const userPromises = Array.from(userIds).map(userId =>
+  codeTools.getUser({ userId })
+);
+const users = await Promise.all(userPromises);
+// Output schema: { id: string, name: string, email: string }
+
+// Build user lookup map
+const userMap = {};
+users.forEach(user => {
+  userMap[user.id] = user;
+});
+
+await addJournalEntry("Posts Analysis", \`
+Fetched \${posts.posts.length} posts
+Total comments: \${commentsPerPost.reduce((sum, r) => sum + r.comments.length, 0)}
+Unique users: \${userIds.size}
+\`);
+
+return {
+  posts: posts.posts,
+  comments: commentsPerPost,
+  users: userMap
+};
+\`\`\`
+
+**Key Principles:**
+- Output schemas show you exactly what data structure each tool returns
+- Use this knowledge to write complete workflows in one execute_code
+- Use Promise.all for independent operations
+- Always populate journal entries with meaningful data from tool results
+- Only split into multiple execute_code calls when you need to see actual results to decide next steps
 `;
 
   // Add discovered code tools section
