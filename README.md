@@ -82,14 +82,14 @@ for await (const message of agent.prompt('What is the weather in Tokyo?')) {
 
 ## Defining Your Agent
 
-Your agent consists of tools that are TypeScript modules. Use the `tool()` function from `together-agent` to define tools with type safety:
+Your agent consists of capabilities that are TypeScript modules. Use the `capability()` function from `together-agent` to define capabilities with type safety:
 
 ```typescript
 // my-agent/getWeather.ts
 import { z } from 'zod';
-import { tool } from 'together-agent';
+import { capability } from 'together-agent';
 
-export default tool({
+export default capability({
   discoveryTerms: ['weather', 'forecast', 'temperature', 'climate', 'conditions', 'degrees', 'fahrenheit', 'celsius', 'rain', 'snow', 'wind', 'humidity'],
   inputSchema: z.object({
     location: z.string().describe('City name'),
@@ -113,10 +113,10 @@ export default tool({
 
 ```typescript
 // my-agent/sendEmail.ts
-import { tool } from 'together-agent';
+import { capability } from 'together-agent';
 import { z } from 'zod';
 
-export default tool({
+export default capability({
   discoveryTerms: ['email', 'send', 'message', 'mail', 'recipient', 'address', 'notification', 'letter', 'correspondence'],
   inputSchema: z.object({
     to: z.string().describe('Email address'),
@@ -144,10 +144,10 @@ export default tool({
 
 ```typescript
 // my-agent/emails.ts
-import { tool } from 'together-agent';
+import { capability } from 'together-agent';
 import { z } from 'zod';
 
-export const sendEmail = tool({
+export const sendEmail = capability({
   discoveryTerms: ['email', 'send', 'message', 'mail', 'recipient'],
   inputSchema: z.object({
     to: z.string().describe('Email address'),
@@ -161,7 +161,7 @@ export const sendEmail = tool({
   },
 });
 
-export const readEmails = tool({
+export const readEmails = capability({
   discoveryTerms: ['email', 'read', 'inbox', 'messages', 'unread'],
   inputSchema: z.object({
     folder: z.enum(['inbox', 'sent']).default('inbox'),
@@ -321,9 +321,9 @@ Secrets (API keys, credentials, etc.) are handled with strict isolation:
 
 1. **Context-based isolation** - Secrets are passed via the execution context:
    ```typescript
-   import { tool } from 'together-agent';
+   import { capability } from 'together-agent';
 
-   export default tool({
+   export default capability({
      discoveryTerms: ['example', 'demo'],
      inputSchema: z.object({ /* ... */ }),
      execute: async (input, context) => {
@@ -406,10 +406,10 @@ Tools automatically receive context with secrets and approval methods:
 
 ```typescript
 // my-agent/searchWeb.ts
-import { tool } from 'together-agent';
+import { capability } from 'together-agent';
 import { z } from 'zod';
 
-export default tool({
+export default capability({
   discoveryTerms: ['web', 'search', 'internet', 'browser', 'google', 'bing', 'brave', 'online', 'webpage', 'website', 'url', 'link', 'crawl', 'index'],
   inputSchema: z.object({
     query: z.string(),
@@ -565,10 +565,10 @@ Some tools perform sensitive actions (send emails, delete data, charge cards). T
 ### Requesting Approval
 
 ```typescript
-import { tool } from 'together-agent';
+import { capability } from 'together-agent';
 import { z } from 'zod';
 
-export default tool({
+export default capability({
   discoveryTerms: ['email', 'send', 'mail', 'message'],
   inputSchema: z.object({
     to: z.string(),
@@ -652,7 +652,7 @@ Without approval, the AI can perform destructive or costly actions without user 
 
 **Example implementation:**
 ```typescript
-export default tool({
+export default capability({
   discoveryTerms: ['email', 'send', 'mail', 'message'],
   inputSchema: z.object({
     to: z.string(),
@@ -1006,11 +1006,11 @@ await agent.uploadFile('documents/reports/2024/q1.pdf', pdfBuffer, 'application/
 ```typescript
 // my-agent/analyzeImage.ts
 import { z } from 'zod';
-import { tool } from 'together-agent';
+import { capability } from 'together-agent';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
-export default tool({
+export default capability({
   discoveryTerms: ['image', 'analyze', 'photo', 'picture', 'vision'],
   inputSchema: z.object({
     filename: z.string().describe('Name of the uploaded image file'),
@@ -1105,12 +1105,12 @@ console.log('File size:', response.headers.get('Content-Length'));
 ```typescript
 // my-agent/generatePDF.ts
 import { z } from 'zod';
-import { tool } from 'together-agent';
+import { capability } from 'together-agent';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import PDFDocument from 'pdfkit';
 
-export default tool({
+export default capability({
   discoveryTerms: ['pdf', 'report', 'document', 'generate', 'create'],
   inputSchema: z.object({
     title: z.string().describe('Report title'),
@@ -1154,13 +1154,13 @@ await fs.promises.writeFile('./sales-report.pdf', Buffer.from(buffer));
 
 ### Basic Structure
 
-The `tool()` function from `together-agent` defines tools with access to context (secrets and approvals).
+The `capability()` function from `together-agent` defines capabilities with access to context (secrets and approvals).
 
 ```typescript
 import { z } from 'zod';
-import { tool, ToolExecutionContext } from 'together-agent';
+import { capability, ToolExecutionContext } from 'together-agent';
 
-export default tool({
+export default capability({
   discoveryTerms: string[],
   inputSchema: z.ZodType,
   execute: async (input, context) => any
@@ -1172,15 +1172,15 @@ export default tool({
 ### Named Exports (multiple tools in one file)
 
 ```typescript
-import { tool } from 'together-agent';
+import { capability } from 'together-agent';
 
-export const toolOne = tool({
+export const toolOne = capability({
   discoveryTerms: string[],
   inputSchema: z.ZodType,
   execute: async (input, context) => any
 });
 
-export const toolTwo = tool({
+export const toolTwo = capability({
   discoveryTerms: string[],
   inputSchema: z.ZodType,
   execute: async (input, context) => any
@@ -1207,7 +1207,7 @@ Use concrete terms that clearly identify what the tool does. Avoid generic words
 
 ### `inputSchema`
 
-Zod schema defining tool parameters. The `tool()` function provides full type safety - the `execute` function will have correctly typed input based on your schema.
+Zod schema defining capability parameters. The `capability()` function provides full type safety - the `execute` function will have correctly typed input based on your schema.
 
 ```typescript
 inputSchema: z.object({
@@ -1225,10 +1225,10 @@ inputSchema: z.object({
 
 **Type safety example:**
 ```typescript
-import { tool } from 'together-agent';
+import { capability } from 'together-agent';
 import { z } from 'zod';
 
-export default tool({
+export default capability({
   discoveryTerms: ['weather', 'temperature', 'forecast'],
   inputSchema: z.object({
     location: z.string(),
@@ -1342,7 +1342,7 @@ The SDK doesn't limit how many times tools are called. Without rate limiting, th
 
 **Example implementation:**
 ```typescript
-import { tool } from 'together-agent';
+import { capability } from 'together-agent';
 
 // Simple counter-based rate limiting
 let callCount = 0;
@@ -1351,7 +1351,7 @@ const SESSION_TIMEOUT = 60000; // 1 minute
 
 let sessionStart = Date.now();
 
-export default tool({
+export default capability({
   discoveryTerms: ['search', 'web', 'query', 'find', 'lookup'],
   inputSchema: z.object({
     query: z.string(),
@@ -1537,9 +1537,9 @@ await agent.prompt('message', {
 ```typescript
 // my-agent/getWeather.ts
 import { z } from 'zod';
-import { tool } from 'together-agent';
+import { capability } from 'together-agent';
 
-export default tool({
+export default capability({
   discoveryTerms: ['weather', 'forecast', 'temperature', 'climate', 'meteorology', 'fahrenheit', 'celsius', 'precipitation', 'rain', 'snow', 'drizzle', 'hail', 'storm', 'thunderstorm', 'wind', 'humidity', 'barometric', 'pressure', 'sunny', 'cloudy', 'overcast', 'foggy'],
   inputSchema: z.object({
     location: z.string().describe('City name, region, or coordinates'),
@@ -1581,9 +1581,9 @@ export default tool({
 ```typescript
 // my-agent/sendEmail.ts
 import { z } from 'zod';
-import { tool } from 'together-agent';
+import { capability } from 'together-agent';
 
-export default tool({
+export default capability({
   discoveryTerms: ['email', 'send', 'mail', 'SMTP', 'message', 'recipient', 'address', 'inbox', 'outbox', 'compose', 'deliver', 'notification', 'alert', 'reminder', 'newsletter', 'sendgrid', 'mailgun', 'postmark'],
   inputSchema: z.object({
     to: z.string().describe('Recipient email address'),
@@ -1639,9 +1639,9 @@ export default tool({
 ```typescript
 // my-agent/queryDatabase.ts
 import { z } from 'zod';
-import { tool } from 'together-agent';
+import { capability } from 'together-agent';
 
-export default tool({
+export default capability({
   discoveryTerms: ['database', 'query', 'SQL', 'SELECT', 'WHERE', 'table', 'column', 'row', 'record', 'postgres', 'mysql', 'sqlite', 'mongodb', 'collection', 'document', 'filter', 'JOIN', 'aggregate'],
   inputSchema: z.object({
     table: z.string().describe('Table or collection name'),
@@ -1679,11 +1679,11 @@ export default tool({
 ```typescript
 // my-agent/saveFile.ts
 import { z } from 'zod';
-import { tool } from 'together-agent';
+import { capability } from 'together-agent';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
-export default tool({
+export default capability({
   discoveryTerms: ['file', 'save', 'write', 'store', 'disk', 'filesystem', 'document', 'text', 'data', 'create', 'persist'],
   inputSchema: z.object({
     filename: z.string().describe('Name of the file to save'),
@@ -1709,11 +1709,11 @@ export default tool({
 ```typescript
 // my-agent/readFile.ts
 import { z } from 'zod';
-import { tool } from 'together-agent';
+import { capability } from 'together-agent';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
-export default tool({
+export default capability({
   discoveryTerms: ['file', 'read', 'load', 'open', 'retrieve', 'fetch', 'get', 'document', 'text', 'data'],
   inputSchema: z.object({
     filename: z.string().describe('Name of the file to read'),

@@ -7,10 +7,14 @@
   "bin": {
     "together-agent": "dist/cli.js"
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "build": "pnpm run build:cli && pnpm run build:agent && pnpm run postbuild",
+    "build": "pnpm run build:cli && pnpm run build:agent && pnpm run build:creator && pnpm run postbuild",
     "build:cli": "tsc",
     "build:agent": "node build-agent.js",
+    "build:creator": "node dist/cli.js build creator-agent && mkdir -p dist/creator-agent && cp -r creator-agent/dist/* dist/creator-agent/ && cp -r creator-agent/node_modules dist/creator-agent/ && cp creator-agent/package.json dist/creator-agent/",
     "postbuild": "chmod +x dist/cli.js && chmod +x dist/agent/index.js",
     "dev": "tsc --watch",
     "start": "node dist/cli.js"
@@ -40,6 +44,7 @@
     "commander": "^12.1.0",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
+    "fast-glob": "^3.3.2",
     "zod": "^4.2.1"
   }
 }

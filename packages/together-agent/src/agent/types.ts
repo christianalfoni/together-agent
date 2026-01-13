@@ -1,5 +1,5 @@
 export type AgentMessage =
-  | ExecuteCodeToolsDiscoveryMessage
+  | DiscoverCapabilitiesMessage
   | CodeExecutionStartedMessage
   | CodeExecutionCompletedMessage
   | CustomToolCallStartedMessage
@@ -14,8 +14,8 @@ export type AgentMessage =
   | DebugMessage;
 
 // Native tool messages
-export interface ExecuteCodeToolsDiscoveryMessage {
-  type: "execute_code_tools_discovery";
+export interface DiscoverCapabilitiesMessage {
+  type: "discover_capabilities";
   terms: string;
   matchedTools: Array<{
     name: string;

@@ -3,11 +3,8 @@ import { router } from './routes';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// Create workspace folder in the current working directory
-const workspacePath = path.join(process.cwd(), 'workspace');
-if (!fs.existsSync(workspacePath)) {
-  fs.mkdirSync(workspacePath, { recursive: true });
-}
+// Use WORKSPACE_PATH env variable (defaults to current working directory)
+const workspacePath = process.env.WORKSPACE_PATH || process.cwd();
 
 // Load custom agent prompt from AGENT.md if it exists in the tools directory
 let customAgentPrompt: string | undefined = undefined;

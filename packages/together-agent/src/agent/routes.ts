@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { createTogetherAI } from "@ai-sdk/togetherai";
 import { streamText, stepCountIs, tool as aiSDKTool, CoreMessage } from "ai";
-import { createCodeTools } from "./tools";
+import { createCapabilities } from "./tools";
 import * as fs from "fs";
 import * as path from "path";
 import { pathToFileURL } from "url";
@@ -17,7 +17,7 @@ import {
   createApprovalRequest,
   resolveApproval,
 } from "./approval";
-import { CustomToolDefinition } from "../index";
+import { CustomCapabilityDefinition } from "../index";
 import { workspacePath, customAgentPrompt } from "./index";
 import { shouldCompress, performCompression } from "./journal";
 import {
@@ -39,7 +39,7 @@ let sessionState: SessionState = {
   cumulativeOutputTokens: 0,
   discoveredTools: new Map(),
   executionContext: {},
-  customPrompt: customAgentPrompt,
+  customPrompt: undefined, // Will be set at request time from customAgentPrompt
 };
 
 /**
@@ -71,18 +71,21 @@ function ensureTogetherAgentShim(toolsPath: string): void {
     JSON.stringify(packageJson, null, 2)
   );
 
-  // Create index.js with tool function (no TypeScript types)
+  // Create index.js with capability function (no TypeScript types)
   const indexJs = `// Temporary shim for together-agent until package is published
-export function tool(toolDefinition) {
+export function capability(capabilityDefinition) {
   return (context) => {
     return {
-      discoveryTerms: toolDefinition.discoveryTerms,
-      inputSchema: toolDefinition.inputSchema,
-      outputSchema: toolDefinition.outputSchema,
-      execute: (input) => toolDefinition.execute(input, context),
+      discoveryTerms: capabilityDefinition.discoveryTerms,
+      inputSchema: capabilityDefinition.inputSchema,
+      outputSchema: capabilityDefinition.outputSchema,
+      execute: (input) => capabilityDefinition.execute(input, context),
     };
   };
 }
+
+// Alias for backward compatibility
+export const tool = capability;
 `;
 
   fs.writeFileSync(path.join(togetherAgentPath, "index.js"), indexJs);
@@ -90,18 +93,18 @@ export function tool(toolDefinition) {
 
 async function loadTools(
   context: ToolExecutionContext
-): Promise<Record<string, CustomToolDefinition>> {
+): Promise<Record<string, CustomCapabilityDefinition>> {
   const toolsPath = process.env.TOOLS_PATH;
 
   if (!toolsPath) {
-    console.warn("No TOOLS_PATH specified, running without tools");
+    console.warn("No TOOLS_PATH specified, running without capabilities");
     return {};
   }
 
-  // Ensure together-agent shim exists before loading tools
+  // Ensure together-agent shim exists before loading capabilities
   ensureTogetherAgentShim(toolsPath);
 
-  const tools: Record<string, CustomToolDefinition> = {};
+  const capabilities: Record<string, CustomCapabilityDefinition> = {};
 
   try {
     const files = fs.readdirSync(toolsPath);
@@ -129,7 +132,7 @@ async function loadTools(
             toolDef.outputSchema &&
             toolDef.execute
           ) {
-            tools[fileName] = toolDef;
+            capabilities[fileName] = toolDef;
           } else {
             console.warn(
               `Skipping default export in ${file}: missing required fields (discoveryTerms, inputSchema, outputSchema, execute)`
@@ -137,7 +140,7 @@ async function loadTools(
           }
         }
 
-        // Process named exports (use export name as tool name)
+        // Process named exports (use export name as capability name)
         for (const [exportName, exportValue] of Object.entries(toolModule)) {
           if (exportName === "default") continue;
 
@@ -153,7 +156,7 @@ async function loadTools(
             toolDef.outputSchema &&
             toolDef.execute
           ) {
-            tools[exportName] = toolDef;
+            capabilities[exportName] = toolDef;
           } else {
             console.warn(
               `Skipping named export '${exportName}' in ${file}: missing required fields (discoveryTerms, inputSchema, outputSchema, execute)`
@@ -161,21 +164,21 @@ async function loadTools(
           }
         }
       } catch (err) {
-        console.error(`Failed to load tool ${file}:`, err);
+        console.error(`Failed to load capability ${file}:`, err);
       }
     }
   } catch (err) {
-    console.error("Failed to load tools:", err);
+    console.error("Failed to load capabilities:", err);
   }
 
-  return tools;
+  return capabilities;
 }
 
 function wrapCustomToolWithMessages(
   toolName: string,
-  toolDef: CustomToolDefinition,
+  toolDef: CustomCapabilityDefinition,
   sendMessage: (message: AgentMessage) => void
-): CustomToolDefinition {
+): CustomCapabilityDefinition {
   return {
     ...toolDef,
     execute: async (params: any) => {
@@ -224,33 +227,33 @@ function wrapCustomToolWithMessages(
 }
 
 /**
- * Wraps native tools with message sending and converts them to AI SDK tool format
+ * Wraps LLM tools with message sending and converts them to AI SDK tool format
  */
 function wrapNativeToolsWithMessages(
-  tools: Record<string, any>,
-  wrappedCustomTools: Record<string, any>,
+  capabilities: Record<string, any>,
+  wrappedCapabilities: Record<string, any>,
   sendMessage: (message: AgentMessage) => void,
   state: SessionState
 ) {
   return {
-    execute_code_tools_discovery: aiSDKTool({
-      description: tools.execute_code_tools_discovery.description,
-      inputSchema: tools.execute_code_tools_discovery.inputSchema as any,
+    discover_capabilities: aiSDKTool({
+      description: capabilities.discover_capabilities.description,
+      inputSchema: capabilities.discover_capabilities.inputSchema as any,
       execute: async (params: { terms: string }) => {
-        const result = await tools.execute_code_tools_discovery.execute(params);
+        const result = await capabilities.discover_capabilities.execute(params);
 
-        // Extract tool names and discovery terms for the message
+        // Extract capability names and discovery terms for the message
         const allMatchedTools =
           result.tools?.map((t: any) => ({
             name: t.name,
             discoveryTerms: t.discoveryTerms || [],
           })) || [];
 
-        // Store discovered tools in session state
+        // Store discovered capabilities in session state
         // These will be included in the system prompt on the next turn, making them
         // permanently visible to the LLM without needing to re-discover them.
         // This is more efficient than re-discovering and ensures the LLM always knows
-        // what tools are available and what data structures they return (outputSchema).
+        // what capabilities are available and what data structures they return (outputSchema).
         for (const tool of result.tools || []) {
           if (!state.discoveredTools.has(tool.name)) {
             state.discoveredTools.set(tool.name, {
@@ -263,7 +266,7 @@ function wrapNativeToolsWithMessages(
 
         // Send discovery completion message
         sendMessage({
-          type: "execute_code_tools_discovery",
+          type: "discover_capabilities",
           terms: params.terms,
           matchedTools: allMatchedTools,
         });
@@ -271,13 +274,13 @@ function wrapNativeToolsWithMessages(
         // IMPORTANT: Convert to JSON string to avoid AI SDK validation issues
         // The AI SDK stores tool results in message history, and complex nested objects
         // with schemas cause validation failures. By stringifying, we ensure clean serialization.
-        // Return all matched tools (no deduplication - rely on context compression instead)
+        // Return all matched capabilities (no deduplication - rely on context compression instead)
         return JSON.stringify({ tools: result.tools || [] }, null, 2);
       },
     }),
     execute_code: aiSDKTool({
-      description: tools.execute_code.description,
-      inputSchema: tools.execute_code.inputSchema as any,
+      description: capabilities.execute_code.description,
+      inputSchema: capabilities.execute_code.inputSchema as any,
       execute: async (params: { code: string }) => {
         // Generate unique execution ID
         const executionId = `${Date.now()}-${Math.random()
@@ -291,8 +294,8 @@ function wrapNativeToolsWithMessages(
           executionId,
         });
 
-        // Call the original execute_code tool which has appendJournalEntry
-        const result = await tools.execute_code.execute(params);
+        // Call the original execute_code capability which has appendJournalEntry
+        const result = await capabilities.execute_code.execute(params);
 
         // Parse the JSON result to check for errors
         let parsedResult;
@@ -320,26 +323,29 @@ function wrapNativeToolsWithMessages(
 }
 
 /**
- * Generates the system prompt with discovered tools included
+ * Generates the system prompt with discovered capabilities included
  *
  * DESIGN DECISION: Why System Prompt Instead of Formal Tools Array?
  *
- * Problem: The LLM struggles to "remember" dynamically discovered tools when they only
+ * Problem: The LLM struggles to "remember" dynamically discovered capabilities when they only
  * exist in conversation history. In long conversations or with context compression,
- * the LLM may forget about available tools.
+ * the LLM may forget about available capabilities.
  *
- * Why not use the formal Claude API tools array?
+ * Why not use the formal Claude API tools array for capabilities?
  * - The formal tools array only supports: name, description, input_schema
- * - Our tools ALSO have outputSchema, which is critical for the LLM to know what data
- *   structure it will receive when calling tools via execute_code
- * - The LLM needs outputSchema to compose correct code that handles tool results
+ * - Our capabilities ALSO have outputSchema, which is critical for the LLM to know what data
+ *   structure it will receive when calling capabilities via execute_code
+ * - The LLM needs outputSchema to compose correct code that handles capability results
  *
  * Why system prompt?
- * - Keeps full tool definitions (including outputSchema) always visible to the LLM
+ * - Keeps full capability definitions (including outputSchema) always visible to the LLM
  * - Discovery happens mostly at conversation start (user comes in with a goal)
  * - System prompt updates are cheap since they happen at the start of each turn
- * - The LLM can reference tool schemas without re-discovering them
+ * - The LLM can reference capability schemas without re-discovering them
  * - Works well with prompt caching after initial discovery
+ *
+ * Note: "Tools" (discover_capabilities, execute_code) are what the LLM calls directly.
+ * "Capabilities" are what the LLM can use inside execute_code via the capabilities global.
  */
 function generateSystemPrompt(
   discoveredTools: Map<string, any>,
@@ -352,25 +358,25 @@ function generateSystemPrompt(
 
 ## Your Primary Capability: Code Execution
 
-**You solve tasks by executing code with access to specialized code tools.**
+**You solve tasks by executing code with access to specialized capabilities.**
 
 For EVERY user request, follow this workflow:
-1. **Discover**: Use execute_code_tools_discovery to find relevant code tools for the task
-2. **Execute**: Find the optimal composition of code tools discovered using their output schema to write efficient
+1. **Discover**: Use discover_capabilities to find relevant capabilities for the task
+2. **Execute**: Find the optimal composition of capabilities discovered using their output schema to write efficient
 code for execute_code
 3. **Respond**: Format the results naturally for the user
 
-**CRITICAL: NEVER say you can't do something without first discovering tools**
-- Before declining a request, use execute_code_tools_discovery with relevant terms
-- Only if NO relevant tools are found should you explain you cannot help
+**CRITICAL: NEVER say you can't do something without first discovering capabilities**
+- Before declining a request, use discover_capabilities with relevant terms
+- Only if NO relevant capabilities are found should you explain you cannot help
 - Examples of discovery terms: "email", "weather", "file", "database", "api", "pdf", etc.
 
 ## Tool Usage Guidelines
 
 **IMPORTANT - Internal Tool Mechanics:**
-- NEVER mention tool names (execute_code_tools_discovery, execute_code, etc.) in your responses to users
+- NEVER mention tool names (discover_capabilities, execute_code, etc.) in your responses to users
 - NEVER say "I'm calling the X tool" or "Let me use the Y tool"
-- NEVER explain that you're discovering or executing code tools
+- NEVER explain that you're discovering or executing capabilities
 - Tool usage is INTERNAL BEHAVIOR - users should only see natural responses
 - Just perform actions and present results naturally without exposing implementation details
 
@@ -378,20 +384,20 @@ code for execute_code
 
 **Sandboxed Execution**
 - import and require is not available or allowed
-- use the global "codeTools" to execute discovered tools
-- You can only use "codeTools" with tools that has been discovered with execute_code_tool_discovery
+- use the global "capabilities" to execute discovered capabilities
+- You can only use "capabilities" with capabilities that have been discovered with discover_capabilities
 
-**Code Tools Execution Patterns**
+**Capability Execution Patterns**
 
-Example 1: Chaining tools using output schemas
+Example 1: Chaining capabilities using output schemas
 \`\`\`javascript
 // User asks: "What's the weather in my current city?"
-// Tools discovered: getUserLocation, getWeather
+// Capabilities discovered: getUserLocation, getWeather
 
-const location = await codeTools.getUserLocation();
+const location = await capabilities.getUserLocation();
 // Output schema tells us location returns { city: string, country: string }
 
-const weather = await codeTools.getWeather({
+const weather = await capabilities.getWeather({
   city: location.city
 });
 
@@ -406,12 +412,12 @@ return { city: location.city, weather: weather.condition };
 Example 2: Parallel execution for independent operations
 \`\`\`javascript
 // User asks: "Get me data from all three databases"
-// Tools discovered: queryUserDB, queryAnalyticsDB, queryInventoryDB
+// Capabilities discovered: queryUserDB, queryAnalyticsDB, queryInventoryDB
 
 const [users, analytics, inventory] = await Promise.all([
-  codeTools.queryUserDB({ table: "active_users" }),
-  codeTools.queryAnalyticsDB({ metric: "daily_visits" }),
-  codeTools.queryInventoryDB({ status: "in_stock" })
+  capabilities.queryUserDB({ table: "active_users" }),
+  capabilities.queryAnalyticsDB({ metric: "daily_visits" }),
+  capabilities.queryInventoryDB({ status: "in_stock" })
 ]);
 
 await addJournalEntry("Database Report", \`
@@ -426,15 +432,15 @@ return { users, analytics, inventory };
 Example 3: Complex nested workflow with deduplication
 \`\`\`javascript
 // User asks: "Get all posts with their comments and comment authors"
-// Tools discovered: getPosts, getComments, getUser
+// Capabilities discovered: getPosts, getComments, getUser
 
-const posts = await codeTools.getPosts({ limit: 10 });
+const posts = await capabilities.getPosts({ limit: 10 });
 // Output schema: { posts: Array<{ id: string, title: string }> }
 
 // Fetch comments for all posts in parallel
 const commentsPerPost = await Promise.all(
   posts.posts.map(post =>
-    codeTools.getComments({ postId: post.id })
+    capabilities.getComments({ postId: post.id })
   )
 );
 // Output schema: { comments: Array<{ id: string, userId: string, text: string }> }
@@ -449,7 +455,7 @@ commentsPerPost.forEach(result => {
 
 // Fetch all unique users in parallel
 const userPromises = Array.from(userIds).map(userId =>
-  codeTools.getUser({ userId })
+  capabilities.getUser({ userId })
 );
 const users = await Promise.all(userPromises);
 // Output schema: { id: string, name: string, email: string }
@@ -481,15 +487,15 @@ return {
 - Only split into multiple execute_code calls when you need to see actual results to decide next steps
 `;
 
-  // Add discovered code tools section
-  let toolsSection = "\n## Discovered Code Tools (for use in execute_code)\n\n";
+  // Add discovered capabilities section
+  let toolsSection = "\n## Discovered Capabilities (for use in execute_code)\n\n";
 
   if (discoveredTools.size === 0) {
     toolsSection +=
-      "No code tools have been discovered yet. Use execute_code_tools_discovery to find code tools available for execute_code.\n";
+      "No capabilities have been discovered yet. Use discover_capabilities to find capabilities available for execute_code.\n";
   } else {
     toolsSection +=
-      "The following code tools have been discovered and are available for use in execute_code via codeTools:\n\n";
+      "The following capabilities have been discovered and are available for use in execute_code via capabilities:\n\n";
 
     for (const [name, tool] of discoveredTools.entries()) {
       toolsSection += `### ${name}\n\n`;
@@ -774,6 +780,11 @@ router.post("/", async (req, res) => {
   };
 
   try {
+    // Set custom prompt at request time (not module load time) to avoid initialization order issues
+    if (sessionState.messages.length === 0) {
+      sessionState.customPrompt = customAgentPrompt;
+    }
+
     // Update or add system message with current discovered tools
     // We regenerate the system prompt on EVERY turn to include any newly discovered tools.
     // This ensures the LLM always has access to the full set of discovered tools with their
@@ -809,14 +820,14 @@ router.post("/", async (req, res) => {
     sessionState.lastUserOrAssistantMessage = userMessage;
 
     const together = createTogetherAI({ apiKey });
-    const customTools = await loadTools(context);
+    const capabilities = await loadTools(context);
 
-    // Wrap custom tools to send started/completed messages
-    const wrappedCustomTools: Record<string, CustomToolDefinition> = {};
-    for (const [toolName, toolDef] of Object.entries(customTools)) {
-      wrappedCustomTools[toolName] = wrapCustomToolWithMessages(
-        toolName,
-        toolDef,
+    // Wrap capabilities to send started/completed messages
+    const wrappedCapabilities: Record<string, CustomCapabilityDefinition> = {};
+    for (const [capabilityName, capabilityDef] of Object.entries(capabilities)) {
+      wrappedCapabilities[capabilityName] = wrapCustomToolWithMessages(
+        capabilityName,
+        capabilityDef,
         queueMessage
       );
     }
@@ -833,9 +844,9 @@ router.post("/", async (req, res) => {
       queueMessage
     );
 
-    // Create code tools (native tools) with wrapped custom tools and addJournalEntry
-    const codeTools = createCodeTools(
-      wrappedCustomTools,
+    // Create capabilities (native tools) with wrapped capabilities and addJournalEntry
+    const nativeCapabilities = createCapabilities(
+      wrappedCapabilities,
       addJournalEntry,
       () => sessionState.executionContext,
       (newContext) => {
@@ -844,11 +855,11 @@ router.post("/", async (req, res) => {
       () => new Set(sessionState.discoveredTools.keys())
     );
 
-    // Wrap native tools to send completion messages and convert to AI SDK format
-    const wrappedNativeTools = {
+    // Wrap tools to send completion messages and convert to AI SDK format
+    const wrappedTools = {
       ...wrapNativeToolsWithMessages(
-        codeTools,
-        wrappedCustomTools,
+        nativeCapabilities,
+        wrappedCapabilities,
         queueMessage,
         sessionState
       ),
@@ -859,7 +870,7 @@ router.post("/", async (req, res) => {
       }),
     };
 
-    // Filter out execute_code_tools_discovery and execute_code requests (keep only results)
+    // Filter out discover_capabilities and execute_code requests (keep only results)
     const filterInternalToolCalls = (
       messages: CoreMessage[]
     ): CoreMessage[] => {
@@ -876,13 +887,13 @@ router.post("/", async (req, res) => {
           return message;
         }
 
-        // Filter out tool-call content for execute_code_tools_discovery and execute_code
+        // Filter out tool-call content for discover_capabilities and execute_code
         const filteredContent = message.content.filter((part: any) => {
           if (part.type === "tool-call") {
             const toolName = part.toolName;
             // Filter out internal tool calls
             return (
-              toolName !== "execute_code_tools_discovery" &&
+              toolName !== "discover_capabilities" &&
               toolName !== "execute_code"
             );
           }
@@ -917,7 +928,7 @@ router.post("/", async (req, res) => {
       // model: together("moonshotai/Kimi-K2-Thinking"),
       model: together("moonshotai/Kimi-K2-Instruct-0905"),
       messages: cleanedMessages, // CoreMessages are already in the right format
-      tools: wrappedNativeTools,
+      tools: wrappedTools,
       stopWhen: stepCountIs(40),
       temperature: 0.1,
     });

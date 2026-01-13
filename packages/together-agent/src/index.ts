@@ -5,47 +5,47 @@ import { z } from "zod";
 export { ToolExecutionContext };
 
 /**
- * Custom tool definition for together-agent
+ * Custom capability definition for together-agent
  */
-export interface CustomToolDefinition<INPUT = any, RESULT = any> {
+export interface CustomCapabilityDefinition<INPUT = any, RESULT = any> {
   /**
-   * Terms used for tool discovery - helps the agent find this tool based on user intent
+   * Terms used for capability discovery - helps the agent find this capability based on user intent
    */
   discoveryTerms: string[];
 
   /**
-   * Zod schema defining the input parameters for this tool
+   * Zod schema defining the input parameters for this capability
    */
   inputSchema: z.ZodType<INPUT>;
 
   /**
-   * Zod schema defining the output/result structure of this tool
-   * Used by the LLM to understand what data the tool returns
+   * Zod schema defining the output/result structure of this capability
+   * Used by the LLM to understand what data the capability returns
    */
   outputSchema: z.ZodType<RESULT>;
 
   /**
-   * Execute function that performs the tool's action
+   * Execute function that performs the capability's action
    * @param input - The validated input parameters
-   * @param context - Tool execution context with secrets and approval methods
-   * @returns The result of the tool execution
+   * @param context - Capability execution context with secrets and approval methods
+   * @returns The result of the capability execution
    */
   execute: (input: INPUT, context: ToolExecutionContext) => Promise<RESULT>;
 }
 
 /**
- * Creates a custom tool that can be used with together-agent
- * Returns a function that accepts context and returns the tool definition
+ * Creates a custom capability that can be used with together-agent
+ * Returns a function that accepts context and returns the capability definition
  */
-export function tool<INPUT = any, RESULT = any>(
-  toolDefinition: CustomToolDefinition<INPUT, RESULT>
-): (context: ToolExecutionContext) => CustomToolDefinition<INPUT, RESULT> {
+export function capability<INPUT = any, RESULT = any>(
+  capabilityDefinition: CustomCapabilityDefinition<INPUT, RESULT>
+): (context: ToolExecutionContext) => CustomCapabilityDefinition<INPUT, RESULT> {
   return (context: ToolExecutionContext) => {
     return {
-      discoveryTerms: toolDefinition.discoveryTerms,
-      inputSchema: toolDefinition.inputSchema,
-      outputSchema: toolDefinition.outputSchema,
-      execute: (input: INPUT) => toolDefinition.execute(input, context),
+      discoveryTerms: capabilityDefinition.discoveryTerms,
+      inputSchema: capabilityDefinition.inputSchema,
+      outputSchema: capabilityDefinition.outputSchema,
+      execute: (input: INPUT) => capabilityDefinition.execute(input, context),
     };
   };
 }

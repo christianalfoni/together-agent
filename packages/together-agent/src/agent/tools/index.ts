@@ -1,49 +1,49 @@
 import { z } from "zod";
 import { discoverToolsInMemory } from "./discover_tools";
-import { executeTools } from "./execute_tools";
-import { CustomToolDefinition } from "../../index";
+import { executeTools } from "./execute_code";
+import { CustomCapabilityDefinition } from "../../index";
 
-export function createCodeTools(
-  tools: Record<string, CustomToolDefinition>,
+export function createCapabilities(
+  capabilities: Record<string, CustomCapabilityDefinition>,
   addJournalEntry?: (title: string, markdown: string) => Promise<void>,
   getExecutionContext?: () => Record<string, any>,
   updateExecutionContext?: (newContext: Record<string, any>) => void,
   getDiscoveredTools?: () => Set<string>
 ) {
   return {
-    execute_code_tools_discovery: {
-      description: `Discover code tools available for use in execute_code via the codeTools object.
+    discover_capabilities: {
+      description: `Discover capabilities available for use in execute_code via the capabilities object.
 
-CRITICAL: When starting a task, think about ALL the tools you'll need for the COMPLETE workflow.
+CRITICAL: When starting a task, think about ALL the capabilities you'll need for the COMPLETE workflow.
 - Analyze the full task: what capabilities are involved? (e.g., email, weather, database, files, etc.)
-- Use comprehensive, cross-domain search terms in ONE call to find ALL tools needed for the complete task
-- Example: "Send weather via email" requires weather AND email tools → use terms: "weather temperature forecast email send message"
-- The search will match terms across ALL available tools, so include keywords for every capability you need
-- Only after discovering ALL necessary tools should you proceed to execute_code
+- Use comprehensive, cross-domain search terms in ONE call to find ALL capabilities needed for the complete task
+- Example: "Send weather via email" requires weather AND email capabilities → use terms: "weather temperature forecast email send message"
+- The search will match terms across ALL available capabilities, so include keywords for every capability you need
+- Only after discovering ALL necessary capabilities should you proceed to execute_code
 
 Think ahead: what will I need at each step of this task? Include search terms for ALL of it.`,
       inputSchema: z.object({
-        terms: z.string().describe("Comprehensive search terms covering ALL capabilities needed for the complete task (e.g., 'weather forecast email send' for weather-to-email task). Include keywords for every tool domain you'll need."),
+        terms: z.string().describe("Comprehensive search terms covering ALL capabilities needed for the complete task (e.g., 'weather forecast email send' for weather-to-email task). Include keywords for every capability domain you'll need."),
       }),
       execute: async ({ terms }: { terms: string }) => {
         const alreadyDiscovered = getDiscoveredTools?.() || new Set();
-        return discoverToolsInMemory(terms, tools, alreadyDiscovered);
+        return discoverToolsInMemory(terms, capabilities, alreadyDiscovered);
       },
     },
     execute_code: {
-      description: `Execute JavaScript code with access to asynchronous code tools.
+      description: `Execute JavaScript code with access to asynchronous capabilities.
 
 ## Execution Environment
 The ONLY custom global variable available is:
-- **codeTools** - Object containing all discovered tools and addJournalEntry()
+- **capabilities** - Object containing all discovered capabilities and addJournalEntry()
 
 Standard JavaScript globals are available (Array, JSON, Math, Date, String, Number, Object, Promise, Map, Set, etc.)
 
-All tool calls via codeTools must be awaited. Access tools as functions: codeTools.toolName(args)
+All capability calls via capabilities must be awaited. Access capabilities as functions: capabilities.capabilityName(args)
 
 ## IMPORTANT Restrictions
-- **NO imports or require()** - These will NOT work. Use codeTools to access discovered tools only.
-- **NO external modules** - Only use standard JavaScript and discovered tools via codeTools.
+- **NO imports or require()** - These will NOT work. Use capabilities to access discovered capabilities only.
+- **NO external modules** - Only use standard JavaScript and discovered capabilities via capabilities.
 
 ## State Persistence Across Executions
 Returned object keys automatically become available as global variables in subsequent executions:
@@ -52,12 +52,12 @@ Returned object keys automatically become available as global variables in subse
 - Only top-level keys from returned objects become globals (nested objects remain nested)
 
 ## Return Value
-- MUST return a JSON-serializable object (use the outputSchema of code tools to structure your response)
+- MUST return a JSON-serializable object (use the outputSchema of capabilities to structure your response)
 - DO NOT return markdown strings - return structured data objects
 - The data you return will be formatted by you in your text response to the user
 
 ## Journaling - CRITICAL for Context Retrieval
-ALWAYS call codeTools.addJournalEntry() with COMPREHENSIVE details in the second argument:
+ALWAYS call capabilities.addJournalEntry() with COMPREHENSIVE details in the second argument:
 - Include ALL relevant data, variables, results, and computed values
 - Include input parameters, intermediate results, and final outputs
 - Include error details if any occurred
@@ -69,9 +69,9 @@ ALWAYS call codeTools.addJournalEntry() with COMPREHENSIVE details in the second
 
 \`\`\`js
 // First execution - fetch and return data
-const userResult = await codeTools.getUserData({ userId: 123 })
+const userResult = await capabilities.getUserData({ userId: 123 })
 
-await codeTools.addJournalEntry('Retrieved user data for analysis', \`
+await capabilities.addJournalEntry('Retrieved user data for analysis', \`
 ## User Data Retrieved
 - **User ID**: 123
 - **Name**: \${userResult.name}
@@ -91,12 +91,12 @@ return { userData: userResult } // userData becomes available in next execution
 \`\`\`js
 // Second execution - userData is now available as a global!
 // No need to fetch again, just use it directly
-const emailResult = await codeTools.sendEmail({
+const emailResult = await capabilities.sendEmail({
   to: userData.email,  // Using userData from previous execution
   subject: \`Hello \${userData.name}\`
 })
 
-await codeTools.addJournalEntry('Sent email to user', \`
+await capabilities.addJournalEntry('Sent email to user', \`
 ## Email Sent
 - **Recipient**: \${userData.email}
 - **Name**: \${userData.name}
@@ -115,12 +115,12 @@ return { userData, emailResult } // Both now available in next execution
 
 \`\`\`js
 const [weatherData, locationData] = await Promise.all([
-  codeTools.getWeather({ city: 'Seattle' }),
-  codeTools.getLocation({ city: 'Seattle' })
+  capabilities.getWeather({ city: 'Seattle' }),
+  capabilities.getLocation({ city: 'Seattle' })
 ])
 
 // GOOD - Include all relevant data from both results
-await codeTools.addJournalEntry('Fetched weather and location data', \`
+await capabilities.addJournalEntry('Fetched weather and location data', \`
 ## Weather Data for Seattle
 - **Temperature**: \${weatherData.temperature}°F
 - **Condition**: \${weatherData.condition}
@@ -146,7 +146,7 @@ return { weatherData, locationData }
 - Return structured JSON data
 
 \`\`\`js
-const rawData = await codeTools.fetchData({ source: 'api' })
+const rawData = await capabilities.fetchData({ source: 'api' })
 const processed = rawData.items.filter(item => item.active).map(item => ({
   id: item.id,
   name: item.name,
@@ -154,7 +154,7 @@ const processed = rawData.items.filter(item => item.active).map(item => ({
 }))
 
 // GOOD - Include input data, processing logic, and results
-await codeTools.addJournalEntry('Processed API data', \`
+await capabilities.addJournalEntry('Processed API data', \`
 ## Data Processing Complete
 
 ### Input
@@ -181,7 +181,7 @@ await codeTools.addJournalEntry('Processed API data', \`
 return { processed, totalCount: processed.length }
 \`\`\`
 
-- Favour composing multiple code tools
+- Favour composing multiple capabilities
 - ALWAYS journal with comprehensive context including variables, data, and execution details
 - Return structured data from execute_code
 `,
@@ -189,12 +189,12 @@ return { processed, totalCount: processed.length }
         code: z
           .string()
           .describe(
-            "JavaScript code to execute. Use the 'codeTools' global to access discovered tools. Must return a JSON-serializable object."
+            "JavaScript code to execute. Use the 'capabilities' global to access discovered capabilities. Must return a JSON-serializable object."
           ),
       }),
       execute: async ({ code }: { code: string }) => {
         const currentContext = getExecutionContext?.() || {};
-        const execution = await executeTools(code, tools, addJournalEntry, currentContext);
+        const execution = await executeTools(code, capabilities, addJournalEntry, currentContext);
 
         // If there's an error, return as JSON
         if (execution.error) {
@@ -203,15 +203,21 @@ return { processed, totalCount: processed.length }
 
         // Merge the result into execution context if it's an object
         // This makes returned values available as globals in future executions
+        // IMPORTANT: Filter out reserved names to avoid overwriting built-in globals
         if (
           execution.result &&
           typeof execution.result === 'object' &&
           !Array.isArray(execution.result) &&
           updateExecutionContext
         ) {
+          const RESERVED_NAMES = ['capabilities', 'addJournalEntry'];
+          const filteredResult = Object.fromEntries(
+            Object.entries(execution.result).filter(([key]) => !RESERVED_NAMES.includes(key))
+          );
+
           updateExecutionContext?.({
             ...currentContext,
-            ...execution.result,
+            ...filteredResult,
           });
         }
 

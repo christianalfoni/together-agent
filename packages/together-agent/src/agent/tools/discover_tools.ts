@@ -1,9 +1,9 @@
 import { z } from "zod";
-import { CustomToolDefinition } from "../../index";
+import { CustomCapabilityDefinition } from "../../index";
 
 export function discoverToolsInMemory(
   query: string,
-  tools: Record<string, CustomToolDefinition>,
+  capabilities: Record<string, CustomCapabilityDefinition>,
   alreadyDiscovered: Set<string> = new Set()
 ) {
   try {
@@ -12,15 +12,15 @@ export function discoverToolsInMemory(
     const queryWords = query.split(/\s+/).filter(word => word.length > 0);
     const regexes = queryWords.map(word => new RegExp(word, "i"));
 
-    for (const [name, tool] of Object.entries(tools)) {
-      // Skip tools that are already discovered and in the system prompt
+    for (const [name, capability] of Object.entries(capabilities)) {
+      // Skip capabilities that are already discovered and in the system prompt
       if (alreadyDiscovered.has(name)) {
         continue;
       }
 
       // Convert Zod schemas to JSON Schema and ensure they're fully serializable
-      const inputSchemaJson = z.toJSONSchema(tool.inputSchema);
-      const outputSchemaJson = z.toJSONSchema(tool.outputSchema);
+      const inputSchemaJson = z.toJSONSchema(capability.inputSchema);
+      const outputSchemaJson = z.toJSONSchema(capability.outputSchema);
 
       // Deep clone via JSON to ensure no circular references or non-serializable data
       const cleanInputSchema = JSON.parse(JSON.stringify(inputSchemaJson));
@@ -29,7 +29,7 @@ export function discoverToolsInMemory(
       const schemaString = JSON.stringify(cleanInputSchema) + JSON.stringify(cleanOutputSchema);
 
       // Join discovery terms for searching
-      const discoveryTermsString = tool.discoveryTerms.join(" ");
+      const discoveryTermsString = capability.discoveryTerms.join(" ");
 
       // Count how many query words match in tool name, discoveryTerms, or schemas
       let matchCount = 0;
@@ -44,7 +44,7 @@ export function discoverToolsInMemory(
           name,
           inputSchema: cleanInputSchema,
           outputSchema: cleanOutputSchema,
-          discoveryTerms: tool.discoveryTerms,
+          discoveryTerms: capability.discoveryTerms,
           matchCount,
         });
       }

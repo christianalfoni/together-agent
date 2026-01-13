@@ -50,7 +50,7 @@ const FORBIDDEN_IDENTIFIERS = new Set([
 
 export function validateCode(
   code: string,
-  additionalGlobals: string[] = ["tools"]
+  additionalGlobals: string[] = ["capabilities"]
 ): ValidationResult {
   const errors: string[] = [];
   const ALLOWED_GLOBALS = new Set([
@@ -80,17 +80,17 @@ export function validateCode(
         node.type === "ExportDefaultDeclaration" ||
         node.type === "ExportAllDeclaration"
       ) {
-        errors.push(`Import statements are not supported. Use codeTools to access discovered tools instead.`);
+        errors.push(`Import statements are not supported. Use capabilities to access discovered capabilities instead.`);
       }
 
       // Check for forbidden identifiers
       if (node.type === "Identifier" && FORBIDDEN_IDENTIFIERS.has(node.name)) {
         if (node.name === "require") {
-          errors.push(`'require()' is not supported. Use codeTools to access discovered tools instead.`);
+          errors.push(`'require()' is not supported. Use capabilities to access discovered capabilities instead.`);
         } else if (node.name === "import") {
-          errors.push(`'import' is not supported. Use codeTools to access discovered tools instead.`);
+          errors.push(`'import' is not supported. Use capabilities to access discovered capabilities instead.`);
         } else {
-          errors.push(`Not allowed: '${node.name}' is not available. Use 'codeTools' to access discovered tools.`);
+          errors.push(`Not allowed: '${node.name}' is not available. Use 'capabilities' to access discovered capabilities.`);
         }
       }
 
@@ -100,7 +100,7 @@ export function validateCode(
         node.object.type === "Identifier"
       ) {
         if (FORBIDDEN_IDENTIFIERS.has(node.object.name)) {
-          errors.push(`Not allowed: '${node.object.name}' is not available. Use 'codeTools' to access discovered tools.`);
+          errors.push(`Not allowed: '${node.object.name}' is not available. Use 'capabilities' to access discovered capabilities.`);
         }
       }
 

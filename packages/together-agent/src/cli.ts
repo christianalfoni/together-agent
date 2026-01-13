@@ -156,9 +156,9 @@ program
 
     // Create getWeather.ts
     const getWeatherContent = `import { z } from 'zod'
-import { tool } from 'together-agent'
+import { capability } from 'together-agent'
 
-export default tool({
+export default capability({
   discoveryTerms: ['weather', 'temperature', 'climate', 'forecast', 'conditions'],
   inputSchema: z.object({
     location: z.string().describe('The city name'),
@@ -221,10 +221,19 @@ program
 program
   .command("run")
   .description("Run the agent server and send a prompt")
-  .argument("<tools-path>", "path to the tools directory")
   .option("-p, --port <port>", "port to run the agent server on", "3000")
-  .action(async (toolsPath: string, options: { port: string }) => {
+  .action(async (options: { port: string }) => {
     const port = options.port;
+
+    // Use .together-agent convention in current directory
+    const toolsPath = path.resolve(process.cwd(), '.together-agent');
+
+    // Validate .together-agent directory exists
+    if (!fs.existsSync(toolsPath)) {
+      console.error('Error: .together-agent directory not found');
+      console.error('Run "together-agent creator" to create and edit tools first');
+      process.exit(1);
+    }
 
     // Load environment variables from .env file
     const envPath = path.resolve(process.cwd(), '.env');
@@ -248,8 +257,7 @@ program
     }
 
     // Build the agent to dist directory (so node_modules can be resolved)
-    const absoluteToolsPath = path.resolve(toolsPath);
-    const buildPath = path.join(absoluteToolsPath, "dist");
+    const buildPath = path.join(toolsPath, "dist");
 
     // Remove existing dist directory to ensure clean build
     if (fs.existsSync(buildPath)) {
@@ -271,7 +279,12 @@ program
 
     // Start the agent server
     const agentProcess = spawn("node", [agentPath], {
-      env: { ...process.env, PORT: port, TOOLS_PATH: toolsRuntimePath },
+      env: {
+        ...process.env,
+        PORT: port,
+        TOOLS_PATH: toolsRuntimePath,
+        WORKSPACE_PATH: process.cwd(),
+      },
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -427,17 +440,357 @@ program
                   }
 
                   switch (message.type) {
-                    case "execute_code_tools_discovery":
+                    case "discover_capabilities":
+                      const searchTerms = message.terms;
+                      const matchedToolNames = message.matchedTools && message.matchedTools.length > 0
+                        ? message.matchedTools.map((tool: { name: string }) => tool.name).join(", ")
+                        : "none";
+                      console.log(`\n\x1b[90m🔍 Discovery: "${searchTerms}" → [${matchedToolNames}]\x1b[0m`);
+                      break;
+
+                    case "journal_entry_created":
                       console.log("\n" + "─".repeat(70));
-                      console.log("🔍 CODE TOOLS DISCOVERY (for execute_code)");
-                      console.log(`Search terms: "${message.terms}"`);
-                      if (message.matchedTools.length > 0) {
-                        const toolNames = message.matchedTools.map((tool: { name: string }) => tool.name).join(", ");
-                        console.log(`Matched tools: ${toolNames}`);
-                      } else {
-                        console.log("No code tools matched");
-                      }
+                      console.log("📓 JOURNAL ENTRY CREATED");
+                      console.log(`Entry ${message.entryIndex}: "${message.title}"`);
                       console.log("─".repeat(70));
+                      break;
+
+                    case "journal_entries_read":
+                      console.log("\n" + "─".repeat(70));
+                      console.log("📖 JOURNAL ENTRIES READ");
+                      console.log(`Read entries: ${message.entryIndices.join(", ")}`);
+                      console.log("─".repeat(70));
+                      break;
+
+                    case "journal_entries_compressed":
+                      console.log("\n" + "─".repeat(70));
+                      console.log("🗜️  JOURNAL ENTRIES COMPRESSED");
+                      console.log("Compressed entries:");
+                      message.compressedEntries.forEach((entry: { index: number; title: string }) => {
+                        console.log(`  - Entry ${entry.index}: "${entry.title}"`);
+                      });
+                      console.log("─".repeat(70));
+                      break;
+
+                    case "code_execution_started":
+                      console.log("\n" + "─".repeat(70));
+                      console.log("💻 CODE EXECUTION");
+                      console.log(message.code);
+                      console.log("─".repeat(70));
+                      break;
+
+                    case "code_execution_completed":
+                      if (message.error) {
+                        console.log("\n" + "─".repeat(70));
+                        console.log("💻 CODE EXECUTION - ERROR");
+                        console.log("Error:", message.error);
+                        console.log("─".repeat(70));
+                      } else if (message.logs && message.logs.length > 0) {
+                        console.log("\n" + "─".repeat(70));
+                        console.log("💻 CODE EXECUTION - LOGS");
+                        message.logs.forEach((log: string) => console.log(log));
+                        console.log("─".repeat(70));
+                      }
+                      break;
+
+                    case "custom_tool_call_started":
+                      // Store the tool call info to display when completed
+                      pendingToolCalls.set(message.callId, {
+                        toolName: message.toolName,
+                        args: message.args,
+                      });
+                      break;
+
+                    case "custom_tool_call_completed":
+                      // Show tool call as single entry with status and input
+                      const toolCall = pendingToolCalls.get(message.callId);
+                      if (toolCall) {
+                        console.log("\n" + "─".repeat(70));
+                        if (message.error) {
+                          console.log(`❌ ${toolCall.toolName.toUpperCase()} - Error: ${message.error}`);
+                        } else {
+                          console.log(`✅ ${toolCall.toolName.toUpperCase()}`);
+                        }
+                        if (toolCall.args) {
+                          console.log(JSON.stringify(toolCall.args, null, 2));
+                        }
+                        console.log("─".repeat(70));
+                        pendingToolCalls.delete(message.callId);
+                      }
+                      break;
+
+                    case "text":
+                      // Only process if there's actual content
+                      if (message.content) {
+                        console.log("\n" + "─".repeat(70));
+                        console.log("💬 RESPONSE");
+                        console.log(message.content);
+                        console.log("─".repeat(70));
+                      }
+                      break;
+
+                    case "error":
+                      console.error("\nError:", message.error);
+                      hasError = true;
+                      break;
+
+                    case "done":
+                      // Display usage info if available
+                      if (message.contextSize !== undefined || message.cumulativeInput !== undefined || message.cumulativeOutput !== undefined) {
+                        const contextInfo = message.contextSize !== undefined ? `Context: ${message.contextSize.toLocaleString()}` : '';
+                        const inputInfo = message.cumulativeInput !== undefined ? `Input: ${message.cumulativeInput.toLocaleString()}` : '';
+                        const outputInfo = message.cumulativeOutput !== undefined ? `Output: ${message.cumulativeOutput.toLocaleString()}` : '';
+                        const turnsInfo = message.turns !== undefined && message.totalTurns !== undefined
+                          ? `Turns: ${message.turns}/${message.totalTurns}`
+                          : '';
+                        const parts = [contextInfo, inputInfo, outputInfo, turnsInfo].filter(Boolean);
+                        if (parts.length > 0) {
+                          console.log(`\x1b[90m${parts.join(' | ')}\x1b[0m`); // Gray text
+                        }
+                      }
+                      // Conversation continues automatically
+                      break;
+                  }
+                } catch (e) {
+                  console.error("Failed to parse SSE message:", data);
+                }
+              }
+            }
+          }
+
+          if (hasError) {
+            agentProcess.kill();
+            process.exit(1);
+          }
+
+          // Continue the conversation
+          promptUser();
+        } catch (error) {
+          console.error(
+            "Failed to send request:",
+            error instanceof Error ? error.message : error
+          );
+          agentProcess.kill();
+          process.exit(1);
+        }
+      });
+    };
+
+    // Timeout in case server doesn't start
+    setTimeout(() => {
+      if (!serverReady) {
+        console.error("Error: Server failed to start within 10 seconds");
+        agentProcess.kill();
+        process.exit(1);
+      }
+    }, 10000);
+  });
+
+program
+  .command("creator")
+  .description("Run the creator agent to build and modify tools")
+  .option("-p, --port <port>", "port to run the agent server on", "3000")
+  .action(async (options: { port: string }) => {
+    const port = options.port;
+
+    // Use .together-agent convention in current directory
+    const agentToolsPath = path.resolve(process.cwd(), '.together-agent');
+
+    // Create .together-agent directory if it doesn't exist
+    if (!fs.existsSync(agentToolsPath)) {
+      fs.mkdirSync(agentToolsPath, { recursive: true });
+      console.log('Created .together-agent directory');
+    }
+
+    // Load environment variables from .env file in current directory
+    const envPath = path.resolve(process.cwd(), '.env');
+    const toolEnv: Record<string, string> = {};
+
+    if (fs.existsSync(envPath)) {
+      const result = dotenvConfig({ path: envPath });
+      if (result.parsed) {
+        Object.assign(toolEnv, result.parsed);
+        console.log(`Loaded ${Object.keys(result.parsed).length} environment variable(s) from ${envPath}`);
+      }
+    } else {
+      console.log('No .env file found, proceeding without environment variables');
+    }
+
+    const apiKey = process.env.TOGETHER_API_KEY;
+
+    if (!apiKey) {
+      console.error("Error: TOGETHER_API_KEY environment variable is required");
+      process.exit(1);
+    }
+
+    // Use pre-built creator-agent tools
+    const creatorAgentPath = path.join(__dirname, "creator-agent");
+
+    if (!fs.existsSync(creatorAgentPath)) {
+      console.error(`Error: Creator agent not found at: ${creatorAgentPath}`);
+      console.error("Please ensure the project is built correctly (pnpm build)");
+      process.exit(1);
+    }
+
+    // Verify tools exist
+    const toolFiles = fs.readdirSync(creatorAgentPath).filter(f => f.endsWith('.js'));
+
+    // Get the path to the agent script
+    const agentServerPath = path.join(__dirname, "agent", "index.js");
+
+    // Start the agent server with creator-agent tools
+    const agentProcess = spawn("node", [agentServerPath], {
+      env: {
+        ...process.env,
+        PORT: port,
+        TOOLS_PATH: creatorAgentPath,
+        WORKSPACE_PATH: process.cwd(),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let serverReady = false;
+
+    agentProcess.stdout?.on("data", (data) => {
+      const output = data.toString();
+      console.log(output.trim());
+
+      if (output.includes("Agent server running")) {
+        serverReady = true;
+        // Give the server a moment to fully initialize
+        setTimeout(promptUser, 500);
+      }
+    });
+
+    agentProcess.stderr?.on("data", (data) => {
+      console.error(`Server error: ${data}`);
+    });
+
+    agentProcess.on("close", (code) => {
+      if (code !== 0 && code !== null) {
+        console.error(`Agent server exited with code ${code}`);
+        process.exit(code);
+      }
+    });
+
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+
+    const promptUser = () => {
+      rl.question("\nEnter your prompt: ", async (prompt) => {
+        const trimmedPrompt = prompt.trim();
+
+        if (!trimmedPrompt) {
+          console.log("Empty prompt, please try again.");
+          promptUser();
+          return;
+        }
+
+        if (trimmedPrompt.toLowerCase() === "exit") {
+          console.log("Goodbye!");
+          rl.close();
+          agentProcess.kill();
+          process.exit(0);
+        }
+
+        try {
+          const response = await fetch(`http://localhost:${port}/prompt`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              prompt: trimmedPrompt,
+              apiKey,
+              secrets: toolEnv,
+            }),
+          });
+
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          }
+
+          const reader = response.body?.getReader();
+          if (!reader) {
+            throw new Error("No response body");
+          }
+
+          const decoder = new TextDecoder();
+          let buffer = "";
+          let hasError = false;
+
+          // Track custom tool calls to show them as single entries
+          const pendingToolCalls = new Map<string, { toolName: string; args: any }>();
+
+          while (true) {
+            const { done, value } = await reader.read();
+
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+
+            for (const line of lines) {
+              if (line.startsWith("data: ")) {
+                const data = line.slice(6);
+
+                try {
+                  const message = JSON.parse(data);
+
+                  // Handle approval requests
+                  if (message.type === "approval_request") {
+                    try {
+                      console.log("\n" + "─".repeat(70));
+                      console.log("🔐 APPROVAL REQUIRED");
+                      console.log("Payload:", JSON.stringify(message.payload, null, 2));
+                      console.log("─".repeat(70));
+
+                      // Prompt user for yes/no
+                      const approvalRl = readline.createInterface({
+                        input: process.stdin,
+                        output: process.stdout,
+                      });
+
+                      const answer = await new Promise<string>((resolve) => {
+                        approvalRl.question("Approve? (yes/no): ", resolve);
+                      });
+
+                      approvalRl.close();
+
+                      const approved = answer.trim().toLowerCase() === "yes";
+
+                      // Send approval response to server
+                      const approvalResponse = await fetch(`http://localhost:${port}/prompt/approval`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          approvalId: message.approvalId,
+                          approved,
+                        }),
+                      });
+
+                      if (!approvalResponse.ok) {
+                        console.error(`Failed to send approval response: ${approvalResponse.status}`);
+                      }
+
+                      console.log(approved ? "✅ Approved" : "❌ Rejected");
+                    } catch (error) {
+                      console.error("Error handling approval request:", error);
+                    }
+                    continue;
+                  }
+
+                  switch (message.type) {
+                    case "discover_capabilities":
+                      const searchTerms = message.terms;
+                      const matchedToolNames = message.matchedTools && message.matchedTools.length > 0
+                        ? message.matchedTools.map((tool: { name: string }) => tool.name).join(", ")
+                        : "none";
+                      console.log(`\n\x1b[90m🔍 Discovery: "${searchTerms}" → [${matchedToolNames}]\x1b[0m`);
                       break;
 
                     case "journal_entry_created":

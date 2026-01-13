@@ -32,7 +32,7 @@ export function createReadJournalEntriesTool(
       for (const entryIndex of entryIndices) {
         const journalPath = path.join(
           workspacePath,
-          `.journal/entry-${entryIndex}.md`
+          `.together-agent-journal/entry-${entryIndex}.md`
         );
 
         if (!fs.existsSync(journalPath)) {
@@ -71,7 +71,7 @@ export function createAddJournalEntryTool(
   return async (title: string, markdown: string) => {
     // Create new journal entry
     const entryIndex = sessionState.journalEntries.length;
-    const filePath = `.journal/entry-${entryIndex}.md`;
+    const filePath = `.together-agent-journal/entry-${entryIndex}.md`;
 
     const entry: JournalEntry = {
       index: entryIndex,
@@ -95,7 +95,7 @@ export function createAddJournalEntryTool(
     }
 
     // Create journal file with title and content
-    const journalDir = path.join(workspacePath, ".journal");
+    const journalDir = path.join(workspacePath, ".together-agent-journal");
     fs.mkdirSync(journalDir, { recursive: true });
 
     const fullContent = `# ${title}\n\n${markdown.trim()}\n`;
