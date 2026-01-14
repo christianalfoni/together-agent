@@ -6,17 +6,17 @@ const EXECUTION_TIMEOUT_MS = 30000;
 
 export async function executeTools(
   code: string,
-  capabilities: Record<string, any>,
+  codeTools: Record<string, any>,
   addJournalEntry?: (title: string, markdown: string) => Promise<void>,
   executionContext: Record<string, any> = {}
 ) {
   try {
-    // Transform code to ensure all capability calls are awaited
+    // Transform code to ensure all tool calls are awaited
     const transformedCode = ensureToolCallsAreAwaited(code);
 
     // Validate the code before execution
-    // Allow capabilities and any keys from executionContext as valid globals
-    const allowedGlobals = ["capabilities", ...Object.keys(executionContext)];
+    // Allow tools and any keys from executionContext as valid globals
+    const allowedGlobals = ["tools", ...Object.keys(executionContext)];
     const validation = validateCode(transformedCode, allowedGlobals);
     if (!validation.isValid) {
       return {
@@ -25,32 +25,32 @@ export async function executeTools(
       };
     }
 
-    // Wrap capabilities so they can be called directly as functions
+    // Wrap tools so they can be called directly as functions
     // IMPORTANT: We wrap in anonymous functions to prevent toString() from exposing implementation
-    const wrappedCapabilities: Record<string, any> = {};
+    const wrappedTools: Record<string, any> = {};
 
     // Add addJournalEntry if provided (fire-and-forget tool)
     if (addJournalEntry) {
-      wrappedCapabilities.addJournalEntry = addJournalEntry;
+      wrappedTools.addJournalEntry = addJournalEntry;
     }
 
-    for (const [name, capability] of Object.entries(capabilities)) {
+    for (const [name, codeTool] of Object.entries(codeTools)) {
       // Create a wrapper function that hides the original implementation
       const wrapper = async (...args: any[]) => {
-        return await capability.execute(...args);
+        return await codeTool.execute(...args);
       };
 
-      // Make the capability callable directly
-      wrappedCapabilities[name] = wrapper;
+      // Make the tool callable directly
+      wrappedTools[name] = wrapper;
 
-      // Also keep the original structure for capabilities.name.execute() pattern
-      wrappedCapabilities[name].execute = wrapper;
+      // Also keep the original structure for tools.name.execute() pattern
+      wrappedTools[name].execute = wrapper;
     }
 
-    // Create the async function with capabilities and executionContext variables in scope
-    // Build parameter names list: capabilities plus all executionContext keys
-    const paramNames = ["capabilities", ...Object.keys(executionContext)];
-    const paramValues = [wrappedCapabilities, ...Object.values(executionContext)];
+    // Create the async function with tools and executionContext variables in scope
+    // Build parameter names list: tools plus all executionContext keys
+    const paramNames = ["tools", ...Object.keys(executionContext)];
+    const paramValues = [wrappedTools, ...Object.values(executionContext)];
 
     const asyncFunc = new Function(
       ...paramNames,

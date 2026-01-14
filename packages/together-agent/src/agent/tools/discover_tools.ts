@@ -1,9 +1,9 @@
 import { z } from "zod";
-import { CustomCapabilityDefinition } from "../../index";
+import { CustomToolDefinition } from "../../index";
 
 export function discoverToolsInMemory(
   query: string,
-  capabilities: Record<string, CustomCapabilityDefinition>,
+  codeTools: Record<string, CustomToolDefinition>,
   alreadyDiscovered: Set<string> = new Set()
 ) {
   try {
@@ -12,15 +12,15 @@ export function discoverToolsInMemory(
     const queryWords = query.split(/\s+/).filter(word => word.length > 0);
     const regexes = queryWords.map(word => new RegExp(word, "i"));
 
-    for (const [name, capability] of Object.entries(capabilities)) {
-      // Skip capabilities that are already discovered and in the system prompt
+    for (const [name, codeTool] of Object.entries(codeTools)) {
+      // Skip tools that are already discovered and in the system prompt
       if (alreadyDiscovered.has(name)) {
         continue;
       }
 
       // Convert Zod schemas to JSON Schema and ensure they're fully serializable
-      const inputSchemaJson = z.toJSONSchema(capability.inputSchema);
-      const outputSchemaJson = z.toJSONSchema(capability.outputSchema);
+      const inputSchemaJson = z.toJSONSchema(codeTool.inputSchema);
+      const outputSchemaJson = z.toJSONSchema(codeTool.outputSchema);
 
       // Deep clone via JSON to ensure no circular references or non-serializable data
       const cleanInputSchema = JSON.parse(JSON.stringify(inputSchemaJson));
@@ -29,7 +29,7 @@ export function discoverToolsInMemory(
       const schemaString = JSON.stringify(cleanInputSchema) + JSON.stringify(cleanOutputSchema);
 
       // Join discovery terms for searching
-      const discoveryTermsString = capability.discoveryTerms.join(" ");
+      const discoveryTermsString = codeTool.discoveryTerms.join(" ");
 
       // Count how many query words match in tool name, discoveryTerms, or schemas
       let matchCount = 0;
@@ -44,7 +44,7 @@ export function discoverToolsInMemory(
           name,
           inputSchema: cleanInputSchema,
           outputSchema: cleanOutputSchema,
-          discoveryTerms: capability.discoveryTerms,
+          discoveryTerms: codeTool.discoveryTerms,
           matchCount,
         });
       }

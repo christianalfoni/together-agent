@@ -1,9 +1,9 @@
 import { z } from "zod";
-import { capability } from "together-agent";
+import { tool } from "together-agent";
 import fg from "fast-glob";
 import path from "path";
 
-export default capability({
+export default tool({
   discoveryTerms: [
     "code",
     "find",

@@ -156,9 +156,9 @@ program
 
     // Create getWeather.ts
     const getWeatherContent = `import { z } from 'zod'
-import { capability } from 'together-agent'
+import { tool } from 'together-agent'
 
-export default capability({
+export default tool({
   discoveryTerms: ['weather', 'temperature', 'climate', 'forecast', 'conditions'],
   inputSchema: z.object({
     location: z.string().describe('The city name'),
@@ -440,7 +440,7 @@ program
                   }
 
                   switch (message.type) {
-                    case "discover_capabilities":
+                    case "discover_code_tools":
                       const searchTerms = message.terms;
                       const matchedToolNames = message.matchedTools && message.matchedTools.length > 0
                         ? message.matchedTools.map((tool: { name: string }) => tool.name).join(", ")
@@ -785,7 +785,7 @@ program
                   }
 
                   switch (message.type) {
-                    case "discover_capabilities":
+                    case "discover_code_tools":
                       const searchTerms = message.terms;
                       const matchedToolNames = message.matchedTools && message.matchedTools.length > 0
                         ? message.matchedTools.map((tool: { name: string }) => tool.name).join(", ")

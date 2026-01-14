@@ -1,9 +1,9 @@
 import { z } from 'zod';
-import { capability } from 'together-agent';
+import { tool } from 'together-agent';
 import fs from 'fs/promises';
 import path from 'path';
 
-export default capability({
+export default tool({
   discoveryTerms: [
     'write',
     'create',
