@@ -14,7 +14,7 @@
     "build": "pnpm run build:cli && pnpm run build:agent && pnpm run build:creator && pnpm run postbuild",
     "build:cli": "tsc",
     "build:agent": "node build-agent.js",
-    "build:creator": "node dist/cli.js build creator-agent && mkdir -p dist/creator-agent && cp -r creator-agent/dist/* dist/creator-agent/ && cp -r creator-agent/node_modules dist/creator-agent/ && cp creator-agent/package.json dist/creator-agent/",
+    "build:creator": "node dist/cli.js build creator-agent && mkdir -p dist/creator-agent && cp -r creator-agent/dist/* dist/creator-agent/ && cp creator-agent/package.json dist/creator-agent/",
     "postbuild": "chmod +x dist/cli.js && chmod +x dist/agent/index.js",
     "dev": "tsc --watch",
     "start": "node dist/cli.js"

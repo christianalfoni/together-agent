@@ -1,28 +1,36 @@
-import { z } from 'zod';
-import { tool } from 'together-agent';
-import fs from 'fs/promises';
-import path from 'path';
+// @ts-nocheck
+import { z } from "zod";
+import { tool } from "together-agent";
+import fs from "fs/promises";
+import path from "path";
 
 export default tool({
+  native: true,
   discoveryTerms: [
-    'write',
-    'create',
-    'file',
-    'save',
-    'store',
-    'content',
-    'text',
-    'make',
-    'generate',
-    'output',
-    'new',
-    'add',
+    "write",
+    "create",
+    "file",
+    "save",
+    "store",
+    "content",
+    "text",
+    "make",
+    "generate",
+    "output",
+    "new",
+    "add",
   ],
   inputSchema: z.object({
-    path: z.string().describe('Path to the file (relative to workspace)'),
-    content: z.string().describe('Content to write to the file'),
-    encoding: z.enum(['utf-8', 'ascii', 'base64']).default('utf-8').describe('File encoding'),
-    createDirs: z.boolean().default(true).describe('Create parent directories if they don\'t exist'),
+    path: z.string().describe("Path to the file (relative to workspace)"),
+    content: z.string().describe("Content to write to the file"),
+    encoding: z
+      .enum(["utf-8", "ascii", "base64"])
+      .default("utf-8")
+      .describe("File encoding"),
+    createDirs: z
+      .boolean()
+      .default(true)
+      .describe("Create parent directories if they don't exist"),
   }),
   outputSchema: z.object({
     path: z.string(),
@@ -57,7 +65,7 @@ export default tool({
 
       // Get file stats
       const stats = await fs.stat(filePath);
-      const lines = input.content.split('\n').length;
+      const lines = input.content.split("\n").length;
 
       const message = existed
         ? `File updated: ${input.path}`
@@ -73,8 +81,10 @@ export default tool({
         message,
       };
     } catch (error: any) {
-      if (error.code === 'ENOENT' && !input.createDirs) {
-        throw new Error(`Directory does not exist for: ${input.path}. Set createDirs to true to create parent directories.`);
+      if (error.code === "ENOENT" && !input.createDirs) {
+        throw new Error(
+          `Directory does not exist for: ${input.path}. Set createDirs to true to create parent directories.`
+        );
       }
       throw new Error(`Failed to write file: ${error.message}`);
     }

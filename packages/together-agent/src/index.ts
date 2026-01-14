@@ -31,6 +31,13 @@ export interface CustomToolDefinition<INPUT = any, RESULT = any> {
    * @returns The result of the tool execution
    */
   execute: (input: INPUT, context: ToolExecutionContext) => Promise<RESULT>;
+
+  /**
+   * If true, this tool will be registered as a native Claude API tool
+   * instead of being discoverable through discover_code_tools
+   * @default false
+   */
+  native?: boolean;
 }
 
 /**
@@ -46,6 +53,7 @@ export function tool<INPUT = any, RESULT = any>(
       inputSchema: toolDefinition.inputSchema,
       outputSchema: toolDefinition.outputSchema,
       execute: (input: INPUT) => toolDefinition.execute(input, context),
+      native: toolDefinition.native,
     };
   };
 }
@@ -154,7 +162,7 @@ export class TogetherAgentSDK {
           return response;
         },
         approve: async (approvalId: string) => {
-          const approvalUrl = `${url}/approval`;
+          const approvalUrl = `${baseUrl}/approval`;
 
           const response = await fetch(approvalUrl, {
             method: "POST",
@@ -175,7 +183,7 @@ export class TogetherAgentSDK {
           }
         },
         reject: async (approvalId: string) => {
-          const approvalUrl = `${url}/approval`;
+          const approvalUrl = `${baseUrl}/approval`;
 
           const response = await fetch(approvalUrl, {
             method: "POST",

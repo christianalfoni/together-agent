@@ -7,7 +7,7 @@ export type AgentMessage =
   | ApprovalRequestMessage
   | JournalEntryCreatedMessage
   | JournalEntriesReadMessage
-  | JournalEntriesCompressedMessage
+  | ContextCompressedMessage
   | TextMessage
   | ErrorMessage
   | DoneMessage
@@ -98,9 +98,9 @@ export interface JournalEntriesReadMessage {
   entryIndices: number[];
 }
 
-export interface JournalEntriesCompressedMessage {
-  type: "journal_entries_compressed";
-  compressedEntries: Array<{ index: number; title: string }>;
+export interface ContextCompressedMessage {
+  type: "context_compressed";
+  journalEntries: Array<{ index: number; title: string }>;
 }
 
 export interface ApprovalResponse {

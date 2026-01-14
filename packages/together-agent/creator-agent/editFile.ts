@@ -1,9 +1,11 @@
+// @ts-nocheck
 import { z } from "zod";
 import { tool } from "together-agent";
 import fs from "fs/promises";
 import path from "path";
 
 export default tool({
+  native: true,
   discoveryTerms: [
     "code",
     "write",

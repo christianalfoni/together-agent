@@ -18,7 +18,7 @@ import {
   resolveApproval,
 } from "./approval";
 import { CustomToolDefinition } from "../index";
-import { workspacePath, customAgentPrompt } from "./index";
+import { workspacePath, toolsPath, customAgentPrompt } from "./index";
 import { shouldCompress, performCompression } from "./journal";
 import {
   createReadJournalEntriesTool,
@@ -80,6 +80,7 @@ export function tool(toolDefinition) {
       inputSchema: toolDefinition.inputSchema,
       outputSchema: toolDefinition.outputSchema,
       execute: (input) => toolDefinition.execute(input, context),
+      native: toolDefinition.native,
     };
   };
 }
@@ -90,18 +91,37 @@ export function tool(toolDefinition) {
 
 async function loadTools(
   context: ToolExecutionContext
-): Promise<Record<string, CustomToolDefinition>> {
-  const toolsPath = process.env.TOOLS_PATH;
+): Promise<{
+  codeTools: Record<string, CustomToolDefinition>;
+  nativeTools: Record<string, CustomToolDefinition>;
+}> {
+  let toolsPath = process.env.TOOLS_PATH;
 
   if (!toolsPath) {
     console.warn("No TOOLS_PATH specified, running without tools");
-    return {};
+    return { codeTools: {}, nativeTools: {} };
+  }
+
+  // CREATOR_MODE: Replace default tools with .together-agent/dist if exists
+  const isCreatorMode = process.env.CREATOR_MODE === 'true';
+  if (isCreatorMode) {
+    const workspacePath = process.env.WORKSPACE_PATH || process.cwd();
+    const userToolsDistPath = path.join(workspacePath, '.together-agent', 'dist');
+
+    if (fs.existsSync(userToolsDistPath)) {
+      console.log('CREATOR_MODE: Using tools from .together-agent/dist');
+      toolsPath = userToolsDistPath;
+    } else {
+      console.log('CREATOR_MODE: .together-agent/dist not found, using default tools');
+    }
   }
 
   // Ensure together-agent shim exists before loading tools
   ensureTogetherAgentShim(toolsPath);
 
   const codeTools: Record<string, CustomToolDefinition> = {};
+  const nativeTools: Record<string, CustomToolDefinition> = {};
+  const RESERVED_NAMES = ['discover_code_tools', 'execute_code', 'read_journal_entries'];
 
   try {
     const files = fs.readdirSync(toolsPath);
@@ -129,7 +149,18 @@ async function loadTools(
             toolDef.outputSchema &&
             toolDef.execute
           ) {
-            codeTools[fileName] = toolDef;
+            // Skip reserved names
+            if (RESERVED_NAMES.includes(fileName)) {
+              console.warn(`Skipping tool with reserved name: ${fileName}`);
+              continue;
+            }
+
+            // Separate by native flag
+            if (toolDef.native === true) {
+              nativeTools[fileName] = toolDef;
+            } else {
+              codeTools[fileName] = toolDef;
+            }
           } else {
             console.warn(
               `Skipping default export in ${file}: missing required fields (discoveryTerms, inputSchema, outputSchema, execute)`
@@ -153,7 +184,18 @@ async function loadTools(
             toolDef.outputSchema &&
             toolDef.execute
           ) {
-            codeTools[exportName] = toolDef;
+            // Skip reserved names
+            if (RESERVED_NAMES.includes(exportName)) {
+              console.warn(`Skipping tool with reserved name: ${exportName}`);
+              continue;
+            }
+
+            // Separate by native flag
+            if (toolDef.native === true) {
+              nativeTools[exportName] = toolDef;
+            } else {
+              codeTools[exportName] = toolDef;
+            }
           } else {
             console.warn(
               `Skipping named export '${exportName}' in ${file}: missing required fields (discoveryTerms, inputSchema, outputSchema, execute)`
@@ -168,7 +210,7 @@ async function loadTools(
     console.error("Failed to load tools:", err);
   }
 
-  return codeTools;
+  return { codeTools, nativeTools };
 }
 
 function wrapCustomToolWithMessages(
@@ -317,6 +359,42 @@ function wrapNativeToolsWithMessages(
       },
     }),
   };
+}
+
+/**
+ * Generates description for a tool based on discovery terms
+ */
+function generateToolDescription(
+  toolName: string,
+  toolDef: CustomToolDefinition
+): string {
+  const terms = toolDef.discoveryTerms.slice(0, 5).join(', ');
+  return `${toolName}: For tasks involving ${terms}`;
+}
+
+/**
+ * Converts native tools to AI SDK tool format
+ */
+function convertNativeToolsToAISDK(
+  nativeTools: Record<string, CustomToolDefinition>,
+  sendMessage: (message: AgentMessage) => void
+): Record<string, any> {
+  const aiSDKTools: Record<string, any> = {};
+
+  for (const [toolName, toolDef] of Object.entries(nativeTools)) {
+    // Wrap with message sending
+    const wrappedTool = wrapCustomToolWithMessages(toolName, toolDef, sendMessage);
+
+    // Convert to AI SDK format
+    const description = generateToolDescription(toolName, toolDef);
+    aiSDKTools[toolName] = aiSDKTool({
+      description,
+      inputSchema: toolDef.inputSchema as any,
+      execute: wrappedTool.execute,
+    });
+  }
+
+  return aiSDKTools;
 }
 
 /**
@@ -817,7 +895,7 @@ router.post("/", async (req, res) => {
     sessionState.lastUserOrAssistantMessage = userMessage;
 
     const together = createTogetherAI({ apiKey });
-    const codeTools = await loadTools(context);
+    const { codeTools, nativeTools } = await loadTools(context);
 
     // Wrap code tools to send started/completed messages
     const wrappedCodeTools: Record<string, CustomToolDefinition> = {};
@@ -829,20 +907,23 @@ router.post("/", async (req, res) => {
       );
     }
 
+    // Convert native tools to AI SDK format
+    const nativeAISDKTools = convertNativeToolsToAISDK(nativeTools, queueMessage);
+
     // Create journal tools
     const readJournalEntriesTool = createReadJournalEntriesTool(
-      workspacePath,
+      toolsPath,
       queueMessage
     );
     const addJournalEntry = createAddJournalEntryTool(
       sessionState,
       config,
-      workspacePath,
+      toolsPath,
       queueMessage
     );
 
-    // Create native code tools (discover_code_tools, execute_code) with wrapped code tools and addJournalEntry
-    const nativeCodeTools = createCodeTools(
+    // Create framework tools (discover_code_tools, execute_code) with wrapped code tools and addJournalEntry
+    const frameworkTools = createCodeTools(
       wrappedCodeTools,
       addJournalEntry,
       () => sessionState.executionContext,
@@ -854,8 +935,9 @@ router.post("/", async (req, res) => {
 
     // Wrap tools to send completion messages and convert to AI SDK format
     const wrappedTools = {
+      // Framework tools
       ...wrapNativeToolsWithMessages(
-        nativeCodeTools,
+        frameworkTools,
         wrappedCodeTools,
         queueMessage,
         sessionState
@@ -865,6 +947,8 @@ router.post("/", async (req, res) => {
         inputSchema: readJournalEntriesTool.inputSchema as any,
         execute: readJournalEntriesTool.execute,
       }),
+      // User-defined native tools
+      ...nativeAISDKTools,
     };
 
     // Filter out discover_code_tools and execute_code requests (keep only results)

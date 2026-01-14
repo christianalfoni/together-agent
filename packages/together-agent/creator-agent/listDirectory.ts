@@ -1,38 +1,56 @@
-import { z } from 'zod';
-import { tool } from 'together-agent';
-import fs from 'fs/promises';
-import path from 'path';
+// @ts-nocheck
+import { z } from "zod";
+import { tool } from "together-agent";
+import fs from "fs/promises";
+import path from "path";
 
 export default tool({
+  native: true,
   discoveryTerms: [
-    'list',
-    'directory',
-    'folder',
-    'ls',
-    'dir',
-    'contents',
-    'files',
-    'subdirectories',
-    'tree',
-    'structure',
-    'browse',
-    'explore',
+    "list",
+    "directory",
+    "folder",
+    "ls",
+    "dir",
+    "contents",
+    "files",
+    "subdirectories",
+    "tree",
+    "structure",
+    "browse",
+    "explore",
   ],
   inputSchema: z.object({
-    path: z.string().default('.').describe('Directory path to list (relative to workspace, defaults to workspace root)'),
-    recursive: z.boolean().default(false).describe('Whether to recursively list subdirectories'),
-    showHidden: z.boolean().default(false).describe('Whether to show hidden files (starting with .)'),
-    maxDepth: z.number().default(3).describe('Maximum depth for recursive listing'),
+    path: z
+      .string()
+      .default(".")
+      .describe(
+        "Directory path to list (relative to workspace, defaults to workspace root)"
+      ),
+    recursive: z
+      .boolean()
+      .default(false)
+      .describe("Whether to recursively list subdirectories"),
+    showHidden: z
+      .boolean()
+      .default(false)
+      .describe("Whether to show hidden files (starting with .)"),
+    maxDepth: z
+      .number()
+      .default(3)
+      .describe("Maximum depth for recursive listing"),
   }),
   outputSchema: z.object({
     path: z.string(),
-    entries: z.array(z.object({
-      name: z.string(),
-      path: z.string(),
-      type: z.enum(['file', 'directory', 'symlink']),
-      size: z.number().optional(),
-      children: z.array(z.any()).optional(),
-    })),
+    entries: z.array(
+      z.object({
+        name: z.string(),
+        path: z.string(),
+        type: z.enum(["file", "directory", "symlink"]),
+        size: z.number().optional(),
+        children: z.array(z.any()).optional(),
+      })
+    ),
     totalFiles: z.number(),
     totalDirectories: z.number(),
   }),
@@ -48,13 +66,16 @@ export default tool({
       // Check if path exists and is a directory
       const stats = await fs.stat(targetPath);
       if (!stats.isDirectory()) {
-        throw new Error('Path is not a directory');
+        throw new Error("Path is not a directory");
       }
 
       let totalFiles = 0;
       let totalDirectories = 0;
 
-      async function listDir(dirPath: string, depth: number = 0): Promise<any[]> {
+      async function listDir(
+        dirPath: string,
+        depth: number = 0
+      ): Promise<any[]> {
         if (input.recursive && depth >= input.maxDepth) {
           return [];
         }
@@ -64,26 +85,26 @@ export default tool({
 
         for (const entry of entries) {
           // Skip hidden files unless requested
-          if (!input.showHidden && entry.name.startsWith('.')) {
+          if (!input.showHidden && entry.name.startsWith(".")) {
             continue;
           }
 
           // Skip node_modules for performance
-          if (entry.name === 'node_modules') {
+          if (entry.name === "node_modules") {
             continue;
           }
 
           const fullPath = path.join(dirPath, entry.name);
           const relativePath = path.relative(context.workspacePath, fullPath);
 
-          let entryType: 'file' | 'directory' | 'symlink';
+          let entryType: "file" | "directory" | "symlink";
           let size: number | undefined;
           let children: any[] | undefined;
 
           if (entry.isSymbolicLink()) {
-            entryType = 'symlink';
+            entryType = "symlink";
           } else if (entry.isDirectory()) {
-            entryType = 'directory';
+            entryType = "directory";
             totalDirectories++;
 
             // Recursively list subdirectories if requested
@@ -91,7 +112,7 @@ export default tool({
               children = await listDir(fullPath, depth + 1);
             }
           } else {
-            entryType = 'file';
+            entryType = "file";
             totalFiles++;
 
             // Get file size for files
@@ -114,15 +135,17 @@ export default tool({
 
         // Sort: directories first, then files, alphabetically
         return result.sort((a, b) => {
-          if (a.type === 'directory' && b.type !== 'directory') return -1;
-          if (a.type !== 'directory' && b.type === 'directory') return 1;
+          if (a.type === "directory" && b.type !== "directory") return -1;
+          if (a.type !== "directory" && b.type === "directory") return 1;
           return a.name.localeCompare(b.name);
         });
       }
 
       const entries = await listDir(targetPath);
 
-      console.log(`Found ${totalFiles} files and ${totalDirectories} directories`);
+      console.log(
+        `Found ${totalFiles} files and ${totalDirectories} directories`
+      );
 
       return {
         path: input.path,
@@ -131,7 +154,7 @@ export default tool({
         totalDirectories,
       };
     } catch (error: any) {
-      if (error.code === 'ENOENT') {
+      if (error.code === "ENOENT") {
         throw new Error(`Directory not found: ${input.path}`);
       }
       throw new Error(`Failed to list directory: ${error.message}`);

@@ -114,7 +114,7 @@ program
       version: "1.0.0",
       type: "module",
       scripts: {
-        build: "tsc",
+        build: "rm -rf dist && tsc",
       },
       dependencies: {
         zod: "latest",
@@ -419,7 +419,7 @@ program
                       const approved = answer.trim().toLowerCase() === "yes";
 
                       // Send approval response to server
-                      const approvalResponse = await fetch(`http://localhost:${port}/prompt/approval`, {
+                      const approvalResponse = await fetch(`http://localhost:${port}/approval`, {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({
@@ -462,11 +462,11 @@ program
                       console.log("─".repeat(70));
                       break;
 
-                    case "journal_entries_compressed":
+                    case "context_compressed":
                       console.log("\n" + "─".repeat(70));
-                      console.log("🗜️  JOURNAL ENTRIES COMPRESSED");
-                      console.log("Compressed entries:");
-                      message.compressedEntries.forEach((entry: { index: number; title: string }) => {
+                      console.log("🗜️  CONTEXT COMPRESSED");
+                      console.log("Compressed journal entries:");
+                      message.journalEntries.forEach((entry: { index: number; title: string }) => {
                         console.log(`  - Entry ${entry.index}: "${entry.title}"`);
                       });
                       console.log("─".repeat(70));
@@ -645,6 +645,7 @@ program
         PORT: port,
         TOOLS_PATH: creatorAgentPath,
         WORKSPACE_PATH: process.cwd(),
+        CREATOR_MODE: 'true',
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -764,7 +765,7 @@ program
                       const approved = answer.trim().toLowerCase() === "yes";
 
                       // Send approval response to server
-                      const approvalResponse = await fetch(`http://localhost:${port}/prompt/approval`, {
+                      const approvalResponse = await fetch(`http://localhost:${port}/approval`, {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({
@@ -807,11 +808,11 @@ program
                       console.log("─".repeat(70));
                       break;
 
-                    case "journal_entries_compressed":
+                    case "context_compressed":
                       console.log("\n" + "─".repeat(70));
-                      console.log("🗜️  JOURNAL ENTRIES COMPRESSED");
-                      console.log("Compressed entries:");
-                      message.compressedEntries.forEach((entry: { index: number; title: string }) => {
+                      console.log("🗜️  CONTEXT COMPRESSED");
+                      console.log("Compressed journal entries:");
+                      message.journalEntries.forEach((entry: { index: number; title: string }) => {
                         console.log(`  - Entry ${entry.index}: "${entry.title}"`);
                       });
                       console.log("─".repeat(70));

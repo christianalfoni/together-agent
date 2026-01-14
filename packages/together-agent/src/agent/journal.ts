@@ -71,8 +71,8 @@ export function performCompression(
   // Send compression SSE message if journals were compressed
   if (compressedJournalIndices.length > 0) {
     queueMessage({
-      type: "journal_entries_compressed",
-      compressedEntries: compressedJournalIndices.map((idx) => {
+      type: "context_compressed",
+      journalEntries: compressedJournalIndices.map((idx) => {
         const entry = sessionState.journalEntries[idx];
         return {
           index: entry.index,

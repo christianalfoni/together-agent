@@ -14,7 +14,7 @@ import { shouldCompress, performCompression } from "../journal";
  * This tool reads the full contents of one or more journal entries
  */
 export function createReadJournalEntriesTool(
-  workspacePath: string,
+  toolsPath: string | undefined,
   queueMessage: (msg: AgentMessage) => void
 ) {
   return {
@@ -30,9 +30,16 @@ export function createReadJournalEntriesTool(
       const contents: string[] = [];
 
       for (const entryIndex of entryIndices) {
+        if (!toolsPath) {
+          contents.push(
+            `# Entry ${entryIndex}: Not available\n\nJournals directory not configured.`
+          );
+          continue;
+        }
+
         const journalPath = path.join(
-          workspacePath,
-          `.together-agent-journal/entry-${entryIndex}.md`
+          toolsPath,
+          `journals/entry-${entryIndex}.md`
         );
 
         if (!fs.existsSync(journalPath)) {
@@ -65,13 +72,13 @@ export function createReadJournalEntriesTool(
 export function createAddJournalEntryTool(
   sessionState: SessionState,
   config: JournalConfig,
-  workspacePath: string,
+  toolsPath: string | undefined,
   queueMessage: (msg: AgentMessage) => void
 ) {
   return async (title: string, markdown: string) => {
     // Create new journal entry
     const entryIndex = sessionState.journalEntries.length;
-    const filePath = `.together-agent-journal/entry-${entryIndex}.md`;
+    const filePath = `journals/entry-${entryIndex}.md`;
 
     const entry: JournalEntry = {
       index: entryIndex,
@@ -94,12 +101,12 @@ export function createAddJournalEntryTool(
       );
     }
 
-    // Create journal file with title and content
-    const journalDir = path.join(workspacePath, ".together-agent-journal");
-    fs.mkdirSync(journalDir, { recursive: true });
-
-    const fullContent = `# ${title}\n\n${markdown.trim()}\n`;
-    fs.writeFileSync(path.join(workspacePath, filePath), fullContent);
+    // Write journal file with title and content
+    if (toolsPath) {
+      const fullContent = `# ${title}\n\n${markdown.trim()}\n`;
+      const journalFilePath = path.join(toolsPath, filePath);
+      fs.writeFileSync(journalFilePath, fullContent);
+    }
 
     // Send SSE message
     queueMessage({

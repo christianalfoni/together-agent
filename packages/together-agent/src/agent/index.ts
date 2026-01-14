@@ -19,10 +19,22 @@ if (toolsPath) {
       console.error('✗ Failed to read AGENT.md:', err);
     }
   }
+
+  // Create/recreate journals directory
+  const journalsPath = path.join(toolsPath, 'journals');
+  try {
+    if (fs.existsSync(journalsPath)) {
+      fs.rmSync(journalsPath, { recursive: true, force: true });
+    }
+    fs.mkdirSync(journalsPath, { recursive: true });
+    console.log('✓ Initialized journals directory');
+  } catch (err) {
+    console.error('✗ Failed to initialize journals directory:', err);
+  }
 }
 
-// Export workspace path and custom prompt for use in routes
-export { workspacePath, customAgentPrompt };
+// Export workspace path, tools path, and custom prompt for use in routes
+export { workspacePath, toolsPath, customAgentPrompt };
 
 const app = express();
 const PORT = process.env.PORT || 3000;
