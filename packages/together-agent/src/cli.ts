@@ -935,9 +935,16 @@ program
 program
   .command("deploy")
   .description("Deploy the agent to CodeSandbox")
-  .argument("<tools-path>", "path to the tools directory")
+  .argument("[tools-path]", "path to the tools directory", ".together-agent")
   .action((toolsPath: string) => {
     const absoluteToolsPath = path.resolve(toolsPath);
+
+    // Validate that the tools directory exists
+    if (!fs.existsSync(absoluteToolsPath)) {
+      console.error(`Error: Tools directory not found at ${absoluteToolsPath}`);
+      console.error('Run "together-agent creator" to create tools first');
+      process.exit(1);
+    }
 
     // Helper function to show spinner
     const spinner = (message: string) => {
@@ -1009,7 +1016,10 @@ program
       const relativeToolsPath = "./agent/tools";
 
       const tasksJson = {
-        setupTasks: [`cd ${relativeToolsPath} && npm install`],
+        setupTasks: [
+          `cd ./agent && npm install`,
+          `cd ${relativeToolsPath} && npm install`
+        ],
         tasks: {
           agent: {
             name: "Agent",

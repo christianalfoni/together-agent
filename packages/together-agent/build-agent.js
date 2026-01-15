@@ -12,7 +12,7 @@ async function build() {
       outfile: 'dist/agent/index.js',
       format: 'cjs',
       sourcemap: true,
-      external: [], // Bundle everything
+      external: ['@babel/core', '@babel/plugin-transform-react-jsx'], // Don't bundle Babel
       minify: false,
       banner: {
         js: '#!/usr/bin/env node'

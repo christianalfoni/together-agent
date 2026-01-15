@@ -24,6 +24,7 @@ import {
   createReadJournalEntriesTool,
   createAddJournalEntryTool,
 } from "./tools/journal_tools";
+import { createBuildWidgetTool } from "./tools/build_widget";
 
 export const router = Router();
 
@@ -619,6 +620,79 @@ router.post("/approval", (req, res) => {
   }
 });
 
+router.post("/code-tool", async (req, res) => {
+  try {
+    const { toolName, args, secrets = {}, approvalToken } = req.body;
+
+    if (!toolName) {
+      return res.status(400).json({ error: "toolName is required" });
+    }
+
+    // Create context for tool execution
+    const context: ToolExecutionContext = {
+      secrets,
+      requestApproval: async (payload: any, timeoutMs?: number) => {
+        // If no approval token provided, throw error to require approval
+        if (!approvalToken) {
+          throw new Error(
+            `APPROVAL_REQUIRED:${JSON.stringify({
+              toolName,
+              payload,
+              timeoutMs,
+            })}`
+          );
+        }
+        // In a real implementation, verify the approval token here
+        // For now, we accept any token as approved
+      },
+      workspacePath,
+    };
+
+    // Load tools from the tools directory
+    const { codeTools } = await loadTools(context);
+
+    // Find the requested tool (only in codeTools, not nativeTools)
+    const tool = codeTools[toolName];
+
+    if (!tool) {
+      const availableTools = Object.keys(codeTools).join(", ");
+      return res.status(404).json({
+        error: `Tool '${toolName}' not found. Available tools: ${availableTools || "none"}`,
+      });
+    }
+
+    // Execute the tool
+    try {
+      const result = await tool.execute(args);
+      res.json({ success: true, result });
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+
+      // Check if approval is required
+      if (errorMessage.startsWith("APPROVAL_REQUIRED:")) {
+        const approvalData = JSON.parse(
+          errorMessage.substring("APPROVAL_REQUIRED:".length)
+        );
+        return res.json({
+          success: false,
+          requiresApproval: true,
+          approvalPrompt: approvalData,
+        });
+      }
+
+      // Other errors
+      res.json({ success: false, error: errorMessage });
+    }
+  } catch (error) {
+    console.error("Error in code-tool endpoint:", error);
+    res.status(500).json({
+      error:
+        error instanceof Error ? error.message : "Internal server error",
+    });
+  }
+});
+
 router.get("/files/*filepath", (req, res) => {
   try {
     // Extract the file path from the URL (everything after /files/)
@@ -922,6 +996,9 @@ router.post("/", async (req, res) => {
       queueMessage
     );
 
+    // Create build_widget tool
+    const buildWidgetTool = createBuildWidgetTool(queueMessage);
+
     // Create framework tools (discover_code_tools, execute_code) with wrapped code tools and addJournalEntry
     const frameworkTools = createCodeTools(
       wrappedCodeTools,
@@ -946,6 +1023,11 @@ router.post("/", async (req, res) => {
         description: readJournalEntriesTool.description,
         inputSchema: readJournalEntriesTool.inputSchema as any,
         execute: readJournalEntriesTool.execute,
+      }),
+      build_widget: aiSDKTool({
+        description: buildWidgetTool.description,
+        inputSchema: buildWidgetTool.inputSchema as any,
+        execute: buildWidgetTool.execute,
       }),
       // User-defined native tools
       ...nativeAISDKTools,

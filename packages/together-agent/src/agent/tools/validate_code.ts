@@ -69,9 +69,35 @@ export function validateCode(
       sourceType: "script",
     });
 
+    // Track declared identifiers in each scope
+    const scopeStack: Set<string>[] = [new Set()];
+
+    function pushScope() {
+      scopeStack.push(new Set());
+    }
+
+    function popScope() {
+      scopeStack.pop();
+    }
+
+    function declareInScope(name: string) {
+      scopeStack[scopeStack.length - 1].add(name);
+    }
+
+    function isInScope(name: string): boolean {
+      // Check if name is in any scope or allowed globals
+      if (ALLOWED_GLOBALS.has(name)) return true;
+      for (const scope of scopeStack) {
+        if (scope.has(name)) return true;
+      }
+      return false;
+    }
+
     // Walk the AST to check for forbidden patterns
-    function walk(node: any) {
+    function walk(node: any, parent: any = null) {
       if (!node || typeof node !== "object") return;
+
+      node.parent = parent;
 
       // Check for import/export statements
       if (
@@ -137,17 +163,122 @@ export function validateCode(
         );
       }
 
-      // Check for identifiers that aren't in our allowed list or defined locally
-      if (node.type === "Identifier" && !ALLOWED_GLOBALS.has(node.name)) {
-        // Only flag it if it's being used as a free variable (not a property, parameter, or declaration)
-        const parent = (node as any).parent;
-        if (
-          parent &&
-          parent.type !== "MemberExpression" &&
-          parent.type !== "Property"
-        ) {
-          // This is a simplification - ideally we'd do proper scope analysis
-          // For now we'll be lenient and only catch the obvious cases
+      // Track scope for functions and blocks
+      let createdScope = false;
+      if (
+        node.type === "FunctionDeclaration" ||
+        node.type === "FunctionExpression" ||
+        node.type === "ArrowFunctionExpression" ||
+        node.type === "BlockStatement" ||
+        node.type === "ForStatement" ||
+        node.type === "ForInStatement" ||
+        node.type === "ForOfStatement"
+      ) {
+        pushScope();
+        createdScope = true;
+      }
+
+      // Declare function names
+      if (node.type === "FunctionDeclaration" && node.id) {
+        declareInScope(node.id.name);
+      }
+
+      // Declare function parameters
+      if (
+        (node.type === "FunctionDeclaration" ||
+          node.type === "FunctionExpression" ||
+          node.type === "ArrowFunctionExpression") &&
+        node.params
+      ) {
+        for (const param of node.params) {
+          if (param.type === "Identifier") {
+            declareInScope(param.name);
+          } else if (param.type === "ObjectPattern") {
+            for (const prop of param.properties) {
+              if (prop.type === "Property" && prop.value.type === "Identifier") {
+                declareInScope(prop.value.name);
+              } else if (prop.type === "RestElement" && prop.argument.type === "Identifier") {
+                declareInScope(prop.argument.name);
+              }
+            }
+          } else if (param.type === "ArrayPattern") {
+            for (const element of param.elements) {
+              if (element && element.type === "Identifier") {
+                declareInScope(element.name);
+              }
+            }
+          } else if (param.type === "RestElement" && param.argument.type === "Identifier") {
+            declareInScope(param.argument.name);
+          }
+        }
+      }
+
+      // Declare variable declarations
+      if (node.type === "VariableDeclarator" && node.id) {
+        if (node.id.type === "Identifier") {
+          declareInScope(node.id.name);
+        } else if (node.id.type === "ObjectPattern") {
+          for (const prop of node.id.properties) {
+            if (prop.type === "Property" && prop.value.type === "Identifier") {
+              declareInScope(prop.value.name);
+            } else if (prop.type === "RestElement" && prop.argument.type === "Identifier") {
+              declareInScope(prop.argument.name);
+            }
+          }
+        } else if (node.id.type === "ArrayPattern") {
+          for (const element of node.id.elements) {
+            if (element && element.type === "Identifier") {
+              declareInScope(element.name);
+            }
+          }
+        }
+      }
+
+      // Declare catch clause parameters
+      if (node.type === "CatchClause" && node.param) {
+        pushScope();
+        createdScope = true;
+        if (node.param.type === "Identifier") {
+          declareInScope(node.param.name);
+        }
+      }
+
+      // Check for unknown global identifiers
+      if (node.type === "Identifier") {
+        const parent = node.parent;
+
+        // Skip if this identifier is:
+        // - A property being accessed (obj.prop) - the 'prop' part
+        // - A property key in object literal ({ key: value }) - the 'key' part
+        // - Part of a member expression object (we'll check it separately)
+        // - Being declared (handled above)
+        const isPropertyAccess =
+          parent?.type === "MemberExpression" &&
+          parent.property === node &&
+          !parent.computed;
+
+        const isPropertyKey =
+          parent?.type === "Property" &&
+          parent.key === node &&
+          !parent.computed;
+
+        const isMethodDefinitionKey =
+          parent?.type === "MethodDefinition" &&
+          parent.key === node &&
+          !parent.computed;
+
+        const isBeingDeclared =
+          parent?.type === "VariableDeclarator" && parent.id === node ||
+          parent?.type === "FunctionDeclaration" && parent.id === node ||
+          parent?.type === "CatchClause" && parent.param === node;
+
+        // This is a free variable reference - check if it's allowed
+        if (!isPropertyAccess && !isPropertyKey && !isMethodDefinitionKey && !isBeingDeclared) {
+          if (!isInScope(node.name)) {
+            errors.push(
+              `Unknown identifier '${node.name}' is not allowed. Only these globals are available: ${Array.from(ALLOWED_GLOBALS).sort().join(", ")}`
+            );
+          }
         }
       }
 
@@ -158,14 +289,17 @@ export function validateCode(
         if (Array.isArray(child)) {
           child.forEach((c) => {
             if (c && typeof c === "object") {
-              (c as any).parent = node;
-              walk(c);
+              walk(c, node);
             }
           });
         } else if (child && typeof child === "object") {
-          (child as any).parent = node;
-          walk(child);
+          walk(child, node);
         }
+      }
+
+      // Pop scope after processing children
+      if (createdScope) {
+        popScope();
       }
     }
 

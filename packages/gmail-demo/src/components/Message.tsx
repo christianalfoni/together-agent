@@ -1,10 +1,12 @@
 import ReactMarkdown from 'react-markdown'
 import { useState } from 'react'
+import { Widget } from './Widget'
 
 export interface AgentMessage {
   type:
     | 'text'
-    | 'execute_code_tools_discovery'
+    | 'discover_code_tools'
+    | 'widget_created'
     | 'code_execution_started'
     | 'code_execution_completed'
     | 'custom_tool_call_started'
@@ -31,7 +33,9 @@ export interface AgentMessage {
   entryIndices?: number[]
   journalEntries?: Array<{ index: number; title: string }>
   terms?: string
-  matchedTools?: string[]
+  matchedTools?: Array<{ name: string; discoveryTerms: string[] }>
+  widgetId?: string
+  code?: string
   contextSize?: number
   cumulativeInput?: number
   cumulativeOutput?: number
@@ -55,9 +59,10 @@ export interface MessageProps {
     agentMessage?: AgentMessage
     timestamp?: Date
   }
+  onApprovalRequest: (payload: any) => Promise<string>
 }
 
-export function Message({ message }: MessageProps) {
+export function Message({ message, onApprovalRequest }: MessageProps) {
   const isUser = message.type === 'user'
   const [isExpanded, setIsExpanded] = useState(false)
   const [showCode, setShowCode] = useState(false)
@@ -138,7 +143,7 @@ export function Message({ message }: MessageProps) {
           </div>
         )
 
-      case 'execute_code_tools_discovery':
+      case 'discover_code_tools':
         return (
           <div className="space-y-2">
             <button
@@ -148,7 +153,7 @@ export function Message({ message }: MessageProps) {
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
               </svg>
-              <span>Discovered {message.agentMessage.matchedTools?.length || 0} code tool(s) for execute_code: &quot;{message.agentMessage.terms}&quot;</span>
+              <span>Discovered {message.agentMessage.matchedTools?.length || 0} code tool(s) for: &quot;{message.agentMessage.terms}&quot;</span>
               {message.agentMessage.matchedTools && message.agentMessage.matchedTools.length > 0 && (
                 <svg
                   className={`w-4 h-4 ml-auto transition-transform ${isExpanded ? 'rotate-180' : ''}`}
@@ -162,15 +167,34 @@ export function Message({ message }: MessageProps) {
             </button>
             {isExpanded && message.agentMessage.matchedTools && message.agentMessage.matchedTools.length > 0 && (
               <div className="ml-6 space-y-1 border-l-2 border-blue-200 pl-3">
-                {message.agentMessage.matchedTools.map((toolName) => (
-                  <div key={toolName} className="flex items-center gap-2 text-sm text-gray-700">
+                {message.agentMessage.matchedTools.map((tool) => (
+                  <div key={tool.name} className="flex items-center gap-2 text-sm text-gray-700">
                     <svg className="w-3 h-3 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
-                    <span className="font-mono">{toolName}</span>
+                    <span className="font-mono">{tool.name}</span>
                   </div>
                 ))}
               </div>
+            )}
+          </div>
+        )
+
+      case 'widget_created':
+        return (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-sm text-indigo-600 font-medium mb-2">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" />
+              </svg>
+              <span>Interactive Widget</span>
+            </div>
+            {message.agentMessage.widgetId && message.agentMessage.code && (
+              <Widget
+                widgetId={message.agentMessage.widgetId}
+                code={message.agentMessage.code}
+                onApprovalRequest={onApprovalRequest}
+              />
             )}
           </div>
         )
@@ -452,7 +476,8 @@ export function Message({ message }: MessageProps) {
 
   // Check if this is a tool message (not text, no bubble)
   const isToolMessage = !isUser && message.agentMessage &&
-    (message.agentMessage.type === 'execute_code_tools_discovery' ||
+    (message.agentMessage.type === 'discover_code_tools' ||
+     message.agentMessage.type === 'widget_created' ||
      message.agentMessage.type === 'custom_tool_call_started' ||
      message.agentMessage.type === 'custom_tool_call_completed' ||
      message.agentMessage.type === 'code_execution_started' ||

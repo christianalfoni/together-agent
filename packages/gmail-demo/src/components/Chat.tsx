@@ -36,6 +36,9 @@ export function Chat() {
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // Store pending widget approval promises
+  const widgetApprovalPromisesRef = useRef<Map<string, { resolve: (approvalId: string) => void, reject: (error: Error) => void }>>(new Map())
+
   const { sendPrompt, handleApproval, isStreaming, error } = useAgentStream()
 
   // Auto-scroll to bottom when messages change
@@ -424,13 +427,56 @@ export function Chat() {
   }
 
   const handleApprove = async (approvalId: string) => {
-    await handleApproval(approvalId, true)
-    setApprovalRequest(null)
+    // Check if this is a widget approval
+    const widgetPromise = widgetApprovalPromisesRef.current.get(approvalId)
+    if (widgetPromise) {
+      widgetPromise.resolve(approvalId)
+      widgetApprovalPromisesRef.current.delete(approvalId)
+      setApprovalRequest(null)
+    } else {
+      // Regular agent approval
+      await handleApproval(approvalId, true)
+      setApprovalRequest(null)
+    }
   }
 
   const handleReject = async (approvalId: string) => {
-    await handleApproval(approvalId, false)
-    setApprovalRequest(null)
+    // Check if this is a widget approval
+    const widgetPromise = widgetApprovalPromisesRef.current.get(approvalId)
+    if (widgetPromise) {
+      widgetPromise.reject(new Error('User rejected approval'))
+      widgetApprovalPromisesRef.current.delete(approvalId)
+      setApprovalRequest(null)
+    } else {
+      // Regular agent approval
+      await handleApproval(approvalId, false)
+      setApprovalRequest(null)
+    }
+  }
+
+  // Handler for widget approval requests
+  const handleWidgetApprovalRequest = async (payload: any): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const approvalId = `widget-approval-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+
+      // Store the promise handlers
+      widgetApprovalPromisesRef.current.set(approvalId, { resolve, reject })
+
+      // Show approval dialog
+      setApprovalRequest({
+        approvalId,
+        payload,
+      })
+
+      // Set a timeout to auto-reject after 60 seconds
+      setTimeout(() => {
+        if (widgetApprovalPromisesRef.current.has(approvalId)) {
+          widgetApprovalPromisesRef.current.delete(approvalId)
+          setApprovalRequest(null)
+          reject(new Error('Approval request timed out'))
+        }
+      }, 60000)
+    })
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -510,7 +556,7 @@ export function Chat() {
         )}
 
         {messages.map((message) => (
-          <Message key={message.id} message={message} />
+          <Message key={message.id} message={message} onApprovalRequest={handleWidgetApprovalRequest} />
         ))}
 
         {isStreaming && (

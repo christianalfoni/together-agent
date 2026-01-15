@@ -8,6 +8,7 @@ export type AgentMessage =
   | JournalEntryCreatedMessage
   | JournalEntriesReadMessage
   | ContextCompressedMessage
+  | WidgetCreatedMessage
   | TextMessage
   | ErrorMessage
   | DoneMessage
@@ -101,6 +102,13 @@ export interface JournalEntriesReadMessage {
 export interface ContextCompressedMessage {
   type: "context_compressed";
   journalEntries: Array<{ index: number; title: string }>;
+}
+
+// Widget messages
+export interface WidgetCreatedMessage {
+  type: "widget_created";
+  widgetId: string;
+  code: string; // Transformed code with h() calls and "return Widget;" appended
 }
 
 export interface ApprovalResponse {

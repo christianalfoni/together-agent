@@ -245,6 +245,56 @@ agentRouter.post('/files', requireAuth, upload.array('files', 10), async (req: A
   }
 })
 
+// POST /api/agent/code-tool - Proxy code tool execution to agent
+agentRouter.post('/code-tool', requireAuth, async (req: AuthenticatedRequest, res) => {
+  const { toolName, args, approvalToken } = req.body
+
+  if (!toolName || typeof toolName !== 'string') {
+    return res.status(400).json({ error: 'toolName is required and must be a string' })
+  }
+
+  if (!agentUrl) {
+    return res.status(503).json({ error: 'Agent is not initialized' })
+  }
+
+  try {
+    // Get access token from user object
+    const googleAccessToken = req.user?.accessToken
+
+    // Construct the code-tool endpoint URL
+    const baseUrl = agentUrl.replace(/\/prompt\/?$/, '')
+    const codeToolUrl = `${baseUrl}/code-tool`
+    console.log('Proxying code tool request to:', codeToolUrl)
+
+    // Forward request to agent's /code-tool endpoint
+    const response = await fetch(codeToolUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        toolName,
+        args,
+        secrets: {
+          GOOGLE_ACCESS_TOKEN: googleAccessToken,
+        },
+        approvalToken,
+      }),
+    })
+
+    if (!response.ok) {
+      const text = await response.text()
+      throw new Error(`Agent code-tool request failed: ${text}`)
+    }
+
+    const result = await response.json()
+    res.json(result)
+  } catch (error: any) {
+    console.error('Code tool proxy error:', error)
+    res.status(500).json({ error: error.message || 'Failed to execute code tool' })
+  }
+})
+
 // GET /api/agent/files/* - Download files from agent workspace
 agentRouter.get('/files/*filepath', requireAuth, async (req: AuthenticatedRequest, res) => {
   // Get the full file path from the wildcard (it comes as an array)

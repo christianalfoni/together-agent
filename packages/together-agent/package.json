@@ -17,7 +17,9 @@
     "build:creator": "node dist/cli.js build creator-agent && mkdir -p dist/creator-agent && cp -r creator-agent/dist/* dist/creator-agent/ && cp creator-agent/package.json dist/creator-agent/",
     "postbuild": "chmod +x dist/cli.js && chmod +x dist/agent/index.js",
     "dev": "tsc --watch",
-    "start": "node dist/cli.js"
+    "start": "node dist/cli.js",
+    "test": "vitest",
+    "test:coverage": "vitest --coverage"
   },
   "keywords": [
     "ai",
@@ -32,13 +34,18 @@
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^22.10.2",
+    "@vitest/coverage-v8": "^2.0.0",
     "esbuild": "^0.27.1",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^2.0.0"
   },
   "dependencies": {
     "@ai-sdk/togetherai": "^1.0.30",
+    "@babel/core": "^7.28.6",
+    "@babel/plugin-transform-react-jsx": "^7.28.6",
     "@codesandbox/sdk": "^2.4.2",
     "acorn": "^8.15.0",
+    "acorn-jsx": "^5.3.2",
     "ai": "^5.0.113",
     "ai-code-tools": "^1.0.2",
     "commander": "^12.1.0",
