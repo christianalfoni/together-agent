@@ -1,139 +1,102 @@
 import { z } from "zod";
-import { capability } from "together-agent";
+import { tool } from "together-agent";
 
-export default capability({
+export default tool({
   discoveryTerms: [
     "weather",
     "temperature",
-    "climate",
     "forecast",
     "conditions",
+    "climate",
+    "get weather",
+    "fetch weather",
+    "weather data",
+    "current weather",
+    "weather report",
+    "meteorology",
+    "atmospheric",
+    "humidity",
+    "wind",
+    "precipitation"
   ],
   inputSchema: z.object({
-    location: z.string().describe("The city name"),
-    units: z
-      .enum(["fahrenheit", "celsius"])
-      .default("fahrenheit")
-      .describe("Temperature units"),
+    city: z.string().describe("City name to get weather for"),
+    units: z.enum(["celsius", "fahrenheit"]).default("celsius").describe("Temperature units to return")
   }),
   outputSchema: z.object({
-    location: z.string().describe("The city name"),
-    temperature: z.number().describe("Current temperature"),
-    units: z.enum(["fahrenheit", "celsius"]).describe("Temperature units"),
-    condition: z.string().describe("Weather condition"),
-    humidity: z.number().describe("Humidity percentage"),
-    windSpeed: z.number().describe("Wind speed"),
+    city: z.string(),
+    temperature: z.number(),
+    condition: z.string(),
+    humidity: z.number(),
+    windSpeed: z.number(),
+    units: z.string(),
+    timestamp: z.string()
   }),
-  execute: async ({ location, units }, context) => {
+  execute: async (input, context) => {
+    console.log(`Getting weather for ${input.city} in ${input.units}...`);
+    
     try {
-      // Step 1: Get coordinates for the city using Open-Meteo's geocoding API
-      const geocodingResponse = await fetch(
-        `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(
-          location
-        )}&amp;count=1&amp;language=en&amp;format=json`
-      );
-
-      if (!geocodingResponse.ok) {
-        throw new Error(`Geocoding failed: ${geocodingResponse.statusText}`);
-      }
-
-      const geocodingData = await geocodingResponse.json();
-
-      if (!geocodingData.results || geocodingData.results.length === 0) {
-        throw new Error(`Location not found: ${location}`);
-      }
-
-      const { latitude, longitude, name, country } = geocodingData.results[0];
-
-      // Step 2: Get weather data using the coordinates
-      const weatherResponse = await fetch(
-        `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&amp;longitude=${longitude}&amp;current_weather=true&amp;hourly=relativehumidity_2m,windspeed_10m&amp;timezone=auto&amp;forecast_days=1`
-      );
-
-      if (!weatherResponse.ok) {
-        throw new Error(`Weather API failed: ${weatherResponse.statusText}`);
-      }
-
-      const weatherData = await weatherResponse.json();
-
-      // Convert temperature based on units preference
-      let temperature = weatherData.current_weather.temperature;
-      if (units === "fahrenheit") {
-        temperature = (temperature * 9) / 5 + 32;
-      }
-
-      // Get current hour's humidity and wind speed
-      const currentHour = new Date().getHours();
-      const humidity =
-        weatherData.hourly.relativehumidity_2m[currentHour] || 50;
-      const windSpeed =
-        weatherData.hourly.windspeed_10m[currentHour] ||
-        weatherData.current_weather.windspeed;
-
-      // Convert wind speed to mph if using fahrenheit
-      const windSpeedMph =
-        units === "fahrenheit" ? windSpeed * 0.621371 : windSpeed;
-
-      // Map weather codes to conditions
-      const weatherCode = weatherData.current_weather.weathercode;
-      const condition = getWeatherCondition(weatherCode);
-
-      return {
-        location: `${name}, ${country}`,
-        temperature: Math.round(temperature * 10) / 10,
-        units,
-        condition,
-        humidity: Math.round(humidity),
-        windSpeed: Math.round(windSpeedMph * 10) / 10,
+      // Mock weather data for different cities
+      const mockWeatherData = {
+        "new york": {
+          temperature: input.units === "celsius" ? 22 : 72,
+          condition: "Partly Cloudy",
+          humidity: 65,
+          windSpeed: 12
+        },
+        "london": {
+          temperature: input.units === "celsius" ? 15 : 59,
+          condition: "Rainy",
+          humidity: 80,
+          windSpeed: 8
+        },
+        "tokyo": {
+          temperature: input.units === "celsius" ? 28 : 82,
+          condition: "Sunny",
+          humidity: 70,
+          windSpeed: 5
+        },
+        "paris": {
+          temperature: input.units === "celsius" ? 18 : 64,
+          condition: "Cloudy",
+          humidity: 75,
+          windSpeed: 10
+        },
+        "sydney": {
+          temperature: input.units === "celsius" ? 25 : 77,
+          condition: "Clear",
+          humidity: 60,
+          windSpeed: 15
+        }
       };
-    } catch (error) {
-      console.error("Weather API error:", error);
-
-      // Fallback to mock data with realistic values
-      return {
-        location: location,
-        temperature: units === "celsius" ? 15 : 59,
-        units,
-        condition: "partly cloudy",
-        humidity: 65,
-        windSpeed: 8,
+      
+      // Default weather data for unknown cities
+      const defaultWeather = {
+        temperature: input.units === "celsius" ? 20 : 68,
+        condition: "Fair",
+        humidity: 50,
+        windSpeed: 10
       };
+      
+      // Get weather data for the requested city (case insensitive)
+      const cityKey = input.city.toLowerCase();
+      const weatherData = (mockWeatherData as any)[cityKey] || defaultWeather;
+      
+      const result = {
+        city: input.city,
+        temperature: weatherData.temperature,
+        condition: weatherData.condition,
+        humidity: weatherData.humidity,
+        windSpeed: weatherData.windSpeed,
+        units: input.units,
+        timestamp: new Date().toISOString()
+      };
+      
+      console.log(`Weather retrieved for ${input.city}: ${weatherData.temperature}°${input.units === "celsius" ? "C" : "F"}, ${weatherData.condition}`);
+      
+      return result;
+    } catch (error: any) {
+      throw new Error(`Failed to get weather: ${error.message}`);
     }
   },
 });
-
-function getWeatherCondition(code: number): string {
-  // WMO Weather interpretation codes (https://open-meteo.com/en/docs)
-  const conditions: { [key: number]: string } = {
-    0: "clear sky",
-    1: "mainly clear",
-    2: "partly cloudy",
-    3: "overcast",
-    45: "foggy",
-    48: "depositing rime fog",
-    51: "light drizzle",
-    53: "moderate drizzle",
-    55: "dense drizzle",
-    56: "light freezing drizzle",
-    57: "dense freezing drizzle",
-    61: "slight rain",
-    63: "moderate rain",
-    65: "heavy rain",
-    66: "light freezing rain",
-    67: "heavy freezing rain",
-    71: "slight snow fall",
-    73: "moderate snow fall",
-    75: "heavy snow fall",
-    77: "snow grains",
-    80: "slight rain showers",
-    81: "moderate rain showers",
-    82: "violent rain showers",
-    85: "slight snow showers",
-    86: "heavy snow showers",
-    95: "thunderstorm",
-    96: "thunderstorm with slight hail",
-    99: "thunderstorm with heavy hail",
-  };
-
-  return conditions[code] || "unknown";
-}

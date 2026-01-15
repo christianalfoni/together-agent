@@ -389,12 +389,12 @@ export function Chat() {
             ]
           }
 
-          // For journal_entries_compressed, add as new message
-          if (agentMessage.type === 'journal_entries_compressed') {
+          // For context_compressed, add as new message
+          if (agentMessage.type === 'context_compressed') {
             return [
               ...prev,
               {
-                id: `journal-compressed-${Date.now()}`,
+                id: `context-compressed-${Date.now()}`,
                 type: 'agent' as const,
                 content: '',
                 agentMessage: agentMessage,

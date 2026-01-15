@@ -12,7 +12,7 @@ export interface AgentMessage {
     | 'approval_request'
     | 'journal_entry_created'
     | 'journal_entries_read'
-    | 'journal_entries_compressed'
+    | 'context_compressed'
     | 'error'
     | 'done'
     | 'debug'
@@ -29,7 +29,7 @@ export interface AgentMessage {
   entryIndex?: number
   title?: string
   entryIndices?: number[]
-  compressedEntries?: Array<{ index: number; title: string }>
+  journalEntries?: Array<{ index: number; title: string }>
   terms?: string
   matchedTools?: string[]
   contextSize?: number
@@ -403,7 +403,7 @@ export function Message({ message }: MessageProps) {
           </div>
         )
 
-      case 'journal_entries_compressed':
+      case 'context_compressed':
         return (
           <div className="space-y-2">
             <button
@@ -413,7 +413,7 @@ export function Message({ message }: MessageProps) {
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
               </svg>
-              <span>Journal entries compressed ({message.agentMessage.compressedEntries?.length || 0} entries)</span>
+              <span>Context compressed ({message.agentMessage.journalEntries?.length || 0} journal entries)</span>
               <svg
                 className={`w-4 h-4 ml-auto transition-transform ${isExpanded ? 'rotate-180' : ''}`}
                 fill="none"
@@ -423,9 +423,9 @@ export function Message({ message }: MessageProps) {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
               </svg>
             </button>
-            {isExpanded && message.agentMessage.compressedEntries && (
+            {isExpanded && message.agentMessage.journalEntries && (
               <div className="ml-6 space-y-1 text-xs text-gray-500">
-                {message.agentMessage.compressedEntries.map((entry) => (
+                {message.agentMessage.journalEntries.map((entry) => (
                   <div key={entry.index}>
                     • Entry {entry.index}: &quot;{entry.title}&quot;
                   </div>
@@ -459,7 +459,7 @@ export function Message({ message }: MessageProps) {
      message.agentMessage.type === 'code_execution_completed' ||
      message.agentMessage.type === 'journal_entry_created' ||
      message.agentMessage.type === 'journal_entries_read' ||
-     message.agentMessage.type === 'journal_entries_compressed')
+     message.agentMessage.type === 'context_compressed')
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-4`}>
