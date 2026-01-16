@@ -848,59 +848,29 @@ router.put("/files/*filepath", (req, res) => {
   }
 });
 
-router.post("/", async (req, res) => {
+/**
+ * Shared agent execution logic used by both /prompt (SSE) and /execute (webhook) endpoints
+ */
+async function executeAgent(params: {
+  prompt: string;
+  apiKey: string;
+  secrets: Record<string, string>;
+  approvalTimeout: number;
+  journalConfig: JournalConfig;
+  queueMessage: (message: AgentMessage) => void;
+  sendMessageNow: (message: AgentMessage) => void;
+  flushQueue: () => void;
+}) {
   const {
     prompt,
     apiKey,
-    secrets = {},
-    approvalTimeout = 30000,
+    secrets,
+    approvalTimeout,
     journalConfig,
-  } = req.body;
-
-  if (!prompt) {
-    return res.status(400).json({ error: "Prompt is required" });
-  }
-
-  if (!apiKey) {
-    return res.status(400).json({ error: "Together API key is required" });
-  }
-
-  if (typeof approvalTimeout !== "number" || approvalTimeout <= 0) {
-    return res.status(400).json({
-      error: "approvalTimeout must be a positive number",
-    });
-  }
-
-  // Parse journal configuration
-  const config: JournalConfig = {
-    contextSizeThreshold: journalConfig?.contextSizeThreshold ?? 50000,
-  };
-
-  // Set SSE headers
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-
-  // Message queue to ensure correct ordering
-  const messageQueue: AgentMessage[] = [];
-
-  // Helper function to queue messages (used by tool wrappers)
-  const queueMessage = (message: AgentMessage) => {
-    messageQueue.push(message);
-  };
-
-  // Helper function to send a message immediately (bypass queue)
-  const sendMessageNow = (message: AgentMessage) => {
-    res.write(`data: ${JSON.stringify(message)}\n\n`);
-  };
-
-  // Helper function to flush the queue
-  const flushQueue = () => {
-    for (const message of messageQueue) {
-      sendMessageNow(message);
-    }
-    messageQueue.length = 0;
-  };
+    queueMessage,
+    sendMessageNow,
+    flushQueue,
+  } = params;
 
   // Create requestApproval function for tools
   const requestApproval = async (
@@ -1233,13 +1203,184 @@ router.post("/", async (req, res) => {
       totalTurns: 40,
     });
 
-    res.end();
   } catch (error) {
     console.error("Error occurred:", error);
     sendMessageNow({
       type: "error",
       error: error instanceof Error ? error.message : "An error occurred",
     });
+    throw error;
+  }
+}
+
+router.post("/", async (req, res) => {
+  const {
+    prompt,
+    apiKey,
+    secrets = {},
+    approvalTimeout = 30000,
+    journalConfig,
+  } = req.body;
+
+  if (!prompt) {
+    return res.status(400).json({ error: "Prompt is required" });
+  }
+
+  if (!apiKey) {
+    return res.status(400).json({ error: "Together API key is required" });
+  }
+
+  if (typeof approvalTimeout !== "number" || approvalTimeout <= 0) {
+    return res.status(400).json({
+      error: "approvalTimeout must be a positive number",
+    });
+  }
+
+  // Parse journal configuration
+  const config: JournalConfig = {
+    contextSizeThreshold: journalConfig?.contextSizeThreshold ?? 50000,
+  };
+
+  // Set SSE headers
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+
+  // Message queue to ensure correct ordering
+  const messageQueue: AgentMessage[] = [];
+
+  // Helper function to queue messages (used by tool wrappers)
+  const queueMessage = (message: AgentMessage) => {
+    messageQueue.push(message);
+  };
+
+  // Helper function to send a message immediately (bypass queue)
+  const sendMessageNow = (message: AgentMessage) => {
+    res.write(`data: ${JSON.stringify(message)}\n\n`);
+  };
+
+  // Helper function to flush the queue
+  const flushQueue = () => {
+    for (const message of messageQueue) {
+      sendMessageNow(message);
+    }
+    messageQueue.length = 0;
+  };
+
+  try {
+    await executeAgent({
+      prompt,
+      apiKey,
+      secrets,
+      approvalTimeout,
+      journalConfig: config,
+      queueMessage,
+      sendMessageNow,
+      flushQueue,
+    });
+    res.end();
+  } catch (error) {
     res.end();
   }
+});
+
+router.post("/execute", async (req, res) => {
+  const {
+    prompt,
+    apiKey,
+    secrets = {},
+    approvalTimeout = 30000,
+    journalConfig,
+    webhookUrl,
+    webhookAuthorization,
+  } = req.body;
+
+  if (!prompt) {
+    return res.status(400).json({ error: "Prompt is required" });
+  }
+
+  if (!apiKey) {
+    return res.status(400).json({ error: "Together API key is required" });
+  }
+
+  if (!webhookUrl) {
+    return res.status(400).json({ error: "webhookUrl is required" });
+  }
+
+  if (typeof approvalTimeout !== "number" || approvalTimeout <= 0) {
+    return res.status(400).json({
+      error: "approvalTimeout must be a positive number",
+    });
+  }
+
+  // Parse journal configuration
+  const config: JournalConfig = {
+    contextSizeThreshold: journalConfig?.contextSizeThreshold ?? 50000,
+  };
+
+  // Message queue to ensure correct ordering
+  const messageQueue: AgentMessage[] = [];
+
+  // Helper function to send message via webhook
+  const sendWebhook = async (message: AgentMessage) => {
+    try {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+
+      if (webhookAuthorization) {
+        headers["Authorization"] = webhookAuthorization;
+      }
+
+      await fetch(webhookUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(message),
+      });
+    } catch (error) {
+      console.error("Failed to send webhook:", error);
+      // Don't throw - we don't want to stop execution if webhook fails
+    }
+  };
+
+  // Helper function to queue messages (used by tool wrappers)
+  const queueMessage = (message: AgentMessage) => {
+    messageQueue.push(message);
+  };
+
+  // Helper function to send a message immediately (bypass queue)
+  const sendMessageNow = (message: AgentMessage) => {
+    // Fire and forget - don't await
+    sendWebhook(message).catch(err => {
+      console.error("Webhook error:", err);
+    });
+  };
+
+  // Helper function to flush the queue
+  const flushQueue = () => {
+    for (const message of messageQueue) {
+      sendMessageNow(message);
+    }
+    messageQueue.length = 0;
+  };
+
+  // Respond immediately with accepted status
+  res.status(202).json({
+    success: true,
+    message: "Execution started, results will be sent to webhook"
+  });
+
+  // Execute agent in background (don't await)
+  executeAgent({
+    prompt,
+    apiKey,
+    secrets,
+    approvalTimeout,
+    journalConfig: config,
+    queueMessage,
+    sendMessageNow,
+    flushQueue,
+  }).catch(error => {
+    console.error("Error in background execution:", error);
+  });
 });

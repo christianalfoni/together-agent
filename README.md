@@ -27,6 +27,9 @@ Build AI agents with custom tools powered by Together AI.
   - [The Three Native Tools](#the-three-native-tools)
   - [Execution Flow](#execution-flow)
   - [Message Streaming](#message-streaming)
+- [Execution Modes](#execution-modes)
+  - [Interactive Mode (SSE Streaming)](#1-interactive-mode-sse-streaming)
+  - [Autonomous Mode (Webhooks)](#2-autonomous-mode-webhooks)
 - [Secrets Management](#secrets-management)
   - [Tool Context](#tool-context)
   - [Accessing Secrets](#accessing-secrets)
@@ -58,34 +61,49 @@ Build AI agents with custom tools powered by Together AI.
 
 ## Quick Start
 
-**1. Install**
+**1. Install dependencies**
 
 ```bash
-npm install -g together-agent
+npm install
 ```
 
-**2. Create your agent**
+**2. Build the project**
+
+```bash
+npm run build
+```
+
+**3. Install CLI globally**
+
+```bash
+npm link
+# Or alternatively: npm install -g .
+```
+
+This makes the `together-agent` command available globally on your system.
+
+**4. Create your agent**
 
 ```bash
 export TOGETHER_API_KEY="your-key"
 together-agent init
 ```
 
-**3. Test locally**
+**5. Test locally**
 
 ```bash
 together-agent run
 > What's the weather in Tokyo?
 ```
 
-**4. Deploy**
+**6. Deploy**
 
 ```bash
 together-agent deploy
 # Returns: pt_abc123 (your agent ID)
 ```
 
-**5. Use in your app**
+**7. Use in your app**
 
 ```typescript
 import { TogetherAgentSDK } from "together-agent";
@@ -422,6 +440,139 @@ Agents stream real-time progress messages via Server-Sent Events (SSE):
   messageCount: 10
 }
 ```
+
+## Execution Modes
+
+Together Agent supports two execution modes depending on your use case:
+
+### 1. Interactive Mode (SSE Streaming)
+
+**Endpoint:** `POST /prompt`
+
+**Best for:** Interactive applications where you need real-time progress updates and user interaction (approvals, feedback, etc.)
+
+Messages are streamed to the client in real-time via Server-Sent Events (SSE). The connection remains open throughout execution.
+
+**Usage with SDK:**
+```typescript
+const agent = await sdk.createAgent("pt_abc123");
+
+// Stream messages in real-time
+for await (const message of agent.prompt("What's the weather?")) {
+  if (message.type === "text") {
+    console.log(message.content);
+  }
+}
+```
+
+**Direct HTTP usage:**
+```bash
+curl -N -X POST http://localhost:3000/prompt \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "What is the weather in Tokyo?",
+    "apiKey": "your-together-api-key",
+    "secrets": { "WEATHER_API_KEY": "xyz" }
+  }'
+```
+
+**Characteristics:**
+- Connection stays open during execution
+- Real-time message streaming via SSE
+- Supports interactive approvals
+- Client must remain connected to receive results
+- Ideal for web applications with active user sessions
+
+### 2. Autonomous Mode (Webhooks)
+
+**Endpoint:** `POST /execute`
+
+**Best for:** Background tasks, async workflows, serverless functions, or when the client can't maintain a long-lived connection.
+
+The agent executes in the background and sends all messages to your webhook URL via HTTP POST. The initial request returns immediately with a `202 Accepted` status.
+
+**Request body:**
+```typescript
+{
+  prompt: string;
+  apiKey: string;
+  secrets?: Record<string, string>;
+  webhookUrl: string;              // Required: URL to receive messages
+  webhookAuthorization?: string;   // Optional: Authorization header value
+  approvalTimeout?: number;
+  journalConfig?: {
+    contextSizeThreshold?: number;
+  }
+}
+```
+
+**Example:**
+```bash
+curl -X POST http://localhost:3000/execute \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "What is the weather in Tokyo?",
+    "apiKey": "your-together-api-key",
+    "secrets": { "WEATHER_API_KEY": "xyz" },
+    "webhookUrl": "https://your-server.com/webhook",
+    "webhookAuthorization": "Bearer your-secret-token"
+  }'
+
+# Returns immediately:
+# { "success": true, "message": "Execution started, results will be sent to webhook" }
+```
+
+**Your webhook endpoint receives all messages:**
+```typescript
+// Express.js webhook handler
+app.post("/webhook", (req, res) => {
+  const message = req.body; // AgentMessage (same types as SSE)
+
+  // Verify authorization if you set webhookAuthorization
+  const authHeader = req.headers.authorization;
+  if (authHeader !== "Bearer your-secret-token") {
+    return res.status(401).send("Unauthorized");
+  }
+
+  // Handle messages
+  switch (message.type) {
+    case "text":
+      console.log("Response:", message.content);
+      break;
+    case "custom_tool_call_started":
+      console.log(`Tool ${message.toolName} started`);
+      break;
+    case "done":
+      console.log("Execution complete");
+      break;
+    case "error":
+      console.error("Error:", message.error);
+      break;
+  }
+
+  res.status(200).send("OK");
+});
+```
+
+**Characteristics:**
+- Request returns immediately with `202 Accepted`
+- Agent executes in background
+- All messages sent to webhook URL via POST
+- Same message types as SSE mode
+- No need for long-lived connections
+- Ideal for serverless functions, background jobs, or async workflows
+- Optional `webhookAuthorization` header for security
+
+**Message format:**
+Each webhook POST contains a single `AgentMessage` object (same structure as SSE messages).
+
+**Error handling:**
+If webhook delivery fails, the error is logged but doesn't stop agent execution. Implement retry logic in your webhook handler if needed.
+
+**Security:**
+- Use `webhookAuthorization` to authenticate webhook requests
+- Validate the authorization header in your webhook handler
+- Use HTTPS for webhook URLs in production
 
 ---
 
