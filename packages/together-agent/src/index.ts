@@ -4,6 +4,11 @@ import { z } from "zod";
 
 export { ToolExecutionContext };
 
+export interface AgentMessage {
+  type: string;
+  [key: string]: any;
+}
+
 /**
  * Custom tool definition for together-agent
  */
@@ -69,7 +74,7 @@ interface PromptOptions {
 }
 
 interface Agent {
-  prompt: (message: string, options?: PromptOptions) => Promise<Response>;
+  prompt: (message: string, options?: PromptOptions) => AsyncIterable<AgentMessage>;
   approve: (approvalId: string) => Promise<void>;
   reject: (approvalId: string) => Promise<void>;
   downloadFile: (filePath: string) => Promise<Response>;
@@ -131,15 +136,18 @@ export class TogetherAgentSDK {
       const baseUrl = `https://${sandboxId}-3000.csb.app`;
       const url = baseUrl + "/prompt";
 
+      // Capture apiKey for use in async generator
+      const apiKey = this.apiKey;
+
       // Create the agent object with prompt method
       const agent: Agent = {
         sandboxId,
         url,
         baseUrl,
-        prompt: async (message: string, options: PromptOptions = {}) => {
+        prompt: async function* (message: string, options: PromptOptions = {}) {
           const payload = {
             prompt: message,
-            apiKey: this.apiKey,
+            apiKey: apiKey,
             secrets: options.secrets || {},
           };
 
@@ -158,8 +166,39 @@ export class TogetherAgentSDK {
             );
           }
 
-          // Return the response object so caller can handle SSE stream
-          return response;
+          // Parse SSE stream and yield messages
+          if (!response.body) {
+            throw new Error("No response body");
+          }
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split("\n");
+              buffer = lines.pop() || "";
+
+              for (const line of lines) {
+                if (line.startsWith("data: ")) {
+                  const data = line.slice(6);
+                  try {
+                    const message = JSON.parse(data);
+                    yield message;
+                  } catch (e) {
+                    // Skip malformed messages
+                  }
+                }
+              }
+            }
+          } finally {
+            reader.releaseLock();
+          }
         },
         approve: async (approvalId: string) => {
           const approvalUrl = `${baseUrl}/approval`;
