@@ -119,6 +119,8 @@ for await (const message of agent.prompt("What is the weather in Tokyo?")) {
 }
 ```
 
+Run with `node test-agent.js`.
+
 ## Defining Your Agent
 
 When you initialize an agent it creates a `.together-agent` folder. Your agent consists of tools that are TypeScript modules. Use the `tool()` function from `together-agent` to define tools with type safety:
@@ -930,6 +932,7 @@ When the AI generates code to call your tools, that code is **never directly exe
 2. **Static Analysis** - The AST is analyzed using a strict whitelist approach:
 
    **Allowed globals only:**
+
    - Standard JavaScript built-ins: `Array`, `Boolean`, `Date`, `Error`, `JSON`, `Math`, `Number`, `Object`, `String`, `RegExp`, `Map`, `Set`, `Promise`
    - Standard functions: `parseInt`, `parseFloat`, `isNaN`, `isFinite`
    - Standard values: `undefined`, `NaN`, `Infinity`
@@ -937,6 +940,7 @@ When the AI generates code to call your tools, that code is **never directly exe
    - The `console` object (for logging)
 
    **Allowed language features:**
+
    - Variable declarations (`const`, `let`, `var`)
    - Functions (arrow functions, function declarations, async/await)
    - `for` loops (including `for...of` and `for...in`)
@@ -945,6 +949,7 @@ When the AI generates code to call your tools, that code is **never directly exe
    - Try/catch error handling
 
    **Blocked features:**
+
    - Module imports/exports (`require`, `import`, `export`)
    - Code generation (`eval`, `Function`, `setTimeout`, `setInterval`)
    - Node.js internals (`process`, `global`, `__dirname`, `module`)
