@@ -64,20 +64,21 @@ Build AI agents with custom tools powered by Together AI.
 **1. Install dependencies**
 
 ```bash
-npm install
+pnpm install
 ```
+
+**Install pnpm**: `curl -fsSL https://get.pnpm.io/install.sh | sh -`
 
 **2. Build the project**
 
 ```bash
-npm run build
+pnpm build
 ```
 
 **3. Install CLI globally**
 
 ```bash
-npm link
-# Or alternatively: npm install -g .
+pnpm link --global
 ```
 
 This makes the `together-agent` command available globally on your system.

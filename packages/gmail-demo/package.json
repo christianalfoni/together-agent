@@ -5,7 +5,6 @@
   "private": true,
   "scripts": {
     "dev": "tsx watch server/index.ts",
-    "build": "tsc && vite build",
     "preview": "vite preview",
     "deploy": "together-agent deploy ./tools"
   },
