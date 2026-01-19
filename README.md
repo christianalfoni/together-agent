@@ -2,6 +2,16 @@
 
 Build AI agents with custom tools powered by Together AI.
 
+---
+
+## 🧪 Testing Codename: "amazeballs"
+
+**For testing purposes, this package is temporarily published to npm as `amazeballs`.**
+
+Throughout this documentation, we use `together-agent` as the package name. When installing or using the package during testing, **replace `together-agent` with `amazeballs`**:
+
+---
+
 ## Why Together Agent?
 
 **Code execution as the interface** - Unlike traditional function calling where tools have rigid schemas, Together Agent lets the AI write JavaScript code to call your tools. This means the AI can combine multiple tools, perform calculations, and handle complex logic all in one execution.
@@ -61,50 +71,46 @@ Build AI agents with custom tools powered by Together AI.
 
 ## Quick Start
 
-**1. Install dependencies**
+**1. Install the CLI globally**
 
 ```bash
-pnpm install
-```
-
-**Install pnpm**: `curl -fsSL https://get.pnpm.io/install.sh | sh -`
-
-**2. Build the project**
-
-```bash
-pnpm build
-```
-
-**3. Install CLI globally**
-
-```bash
-pnpm link --global
+npm install -g together-agent
 ```
 
 This makes the `together-agent` command available globally on your system.
 
-**4. Create your agent**
+**2. Create your agent**
 
 ```bash
 export TOGETHER_API_KEY="your-key"
 together-agent init
 ```
 
-**5. Test locally**
+This creates a `.together-agent` folder in your current directory with:
+
+- Example tool (`getWeather.ts`)
+- `package.json` with `together-agent` and `zod` dependencies
+- `tsconfig.json` for TypeScript compilation
+
+**3. Test locally**
 
 ```bash
 together-agent run
 > What's the weather in Tokyo?
 ```
 
-**6. Deploy**
+**4. Deploy**
 
 ```bash
 together-agent deploy
 # Returns: pt_abc123 (your agent ID)
 ```
 
-**7. Use in your app**
+**5. Use in your app**
+
+```bash
+npm install together-agent
+```
 
 ```typescript
 import { TogetherAgentSDK } from "together-agent";
@@ -1036,24 +1042,24 @@ To maximize security:
 
 ### CLI Commands
 
-### `init <path>`
+### `init`
 
-Initialize a new agent with example tools.
+Initialize a new agent with example tools in the current directory.
 
 ```bash
 together-agent init
 ```
 
-Creates:
+Creates a `.together-agent` folder with:
 
-- `package.json` with dependencies (zod, typescript)
+- `package.json` with dependencies (together-agent, zod, typescript)
 - `tsconfig.json` for TypeScript compilation
 - `getWeather.ts` example tool
 - Runs `npm install` automatically
 
-### `run <agent-path> [options]`
+### `run [options]`
 
-Run your agent locally for testing.
+Run your agent locally for testing. Uses the `.together-agent` folder in the current directory.
 
 ```bash
 together-agent run [options]
@@ -1113,9 +1119,9 @@ The weather is currently 72°F and sunny.
 Enter your prompt (or 'exit' to quit):
 ```
 
-### `deploy <agent-path>`
+### `deploy`
 
-Deploy your agent to CodeSandbox for production use.
+Deploy your agent to CodeSandbox for production use. Uses the `.together-agent` folder in the current directory.
 
 ```bash
 together-agent deploy

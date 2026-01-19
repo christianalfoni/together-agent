@@ -99,9 +99,8 @@ program
 program
   .command("init")
   .description("Initialize a new agent project")
-  .argument("<path>", "path to create the project")
-  .action((projectPath: string) => {
-    const absolutePath = path.resolve(projectPath);
+  .action(() => {
+    const absolutePath = path.resolve(process.cwd(), '.together-agent');
 
     console.log(`Creating project at: ${absolutePath}`);
 
@@ -117,6 +116,7 @@ program
         build: "rm -rf dist && tsc",
       },
       dependencies: {
+        amazeballs: "latest",
         zod: "latest",
       },
       devDependencies: {
@@ -156,7 +156,7 @@ program
 
     // Create getWeather.ts
     const getWeatherContent = `import { z } from 'zod'
-import { tool } from 'together-agent'
+import { tool } from 'amazeballs'
 
 export default tool({
   discoveryTerms: ['weather', 'temperature', 'climate', 'forecast', 'conditions'],

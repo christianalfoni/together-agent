@@ -1,11 +1,18 @@
 {
-  "name": "together-agent",
-  "version": "0.1.0",
-  "description": "Build AI agents with custom tools powered by Together AI",
+  "name": "amazeballs",
+  "version": "0.2.0",
+  "description": "Whatever",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "together-agent": "dist/cli.js"
+    "amazeballs": "dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "import": "./dist/index.js"
+    }
   },
   "files": [
     "dist"
