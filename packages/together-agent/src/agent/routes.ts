@@ -290,10 +290,6 @@ function wrapNativeToolsWithMessages(
           })) || [];
 
         // Store discovered tools in session state
-        // These will be included in the system prompt on the next turn, making them
-        // permanently visible to the LLM without needing to re-discover them.
-        // This is more efficient than re-discovering and ensures the LLM always knows
-        // what tools are available and what data structures they return (outputSchema).
         for (const tool of result.tools || []) {
           if (!state.discoveredTools.has(tool.name)) {
             state.discoveredTools.set(tool.name, {
@@ -304,6 +300,18 @@ function wrapNativeToolsWithMessages(
           }
         }
 
+        // CRITICAL: Update the system message immediately with newly discovered tools
+        // This ensures the LLM sees the full tool definitions (including outputSchema)
+        // in the same turn, without needing to wait for the next turn.
+        // The tool result can then just return tool names since schemas are in the system prompt.
+        const updatedSystemPrompt = generateSystemPrompt(
+          state.discoveredTools,
+          state.customPrompt
+        );
+        if (state.messages[0]?.role === "system") {
+          state.messages[0].content = updatedSystemPrompt;
+        }
+
         // Send discovery completion message
         sendMessage({
           type: "discover_code_tools",
@@ -311,11 +319,9 @@ function wrapNativeToolsWithMessages(
           matchedTools: allMatchedTools,
         });
 
-        // IMPORTANT: Convert to JSON string to avoid AI SDK validation issues
-        // The AI SDK stores tool results in message history, and complex nested objects
-        // with schemas cause validation failures. By stringifying, we ensure clean serialization.
-        // Return all matched tools (no deduplication - rely on context compression instead)
-        return JSON.stringify({ tools: result.tools || [] }, null, 2);
+        // Return only tool names - schemas are now in the updated system prompt
+        const toolNames = result.tools?.map((t: any) => t.name) || [];
+        return JSON.stringify({ tools: toolNames }, null, 2);
       },
     }),
     execute_code: aiSDKTool({

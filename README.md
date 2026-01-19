@@ -150,6 +150,14 @@ export default tool({
       .default("fahrenheit")
       .describe("Temperature units"),
   }),
+  outputSchema: z.object({
+    location: z.string(),
+    temperature: z.number(),
+    units: z.string(),
+    condition: z.string(),
+    humidity: z.number(),
+    windSpeed: z.number(),
+  }),
   execute: async (input, context) => {
     // Your weather API call would go here
     return {
@@ -188,6 +196,9 @@ export default tool({
     subject: z.string().describe("Subject line"),
     body: z.string().describe("Email content"),
   }),
+  outputSchema: z.object({
+    success: z.boolean(),
+  }),
   execute: async (input, context) => {
     // Access secrets from context
     const apiKey = context.secrets.SENDGRID_API_KEY;
@@ -219,6 +230,9 @@ export const sendEmail = tool({
     subject: z.string(),
     body: z.string(),
   }),
+  outputSchema: z.object({
+    success: z.boolean(),
+  }),
   execute: async (input, context) => {
     const apiKey = context.secrets.SENDGRID_API_KEY;
     // Send email
@@ -232,6 +246,9 @@ export const readEmails = tool({
     folder: z.enum(["inbox", "sent"]).default("inbox"),
     limit: z.number().default(10),
   }),
+  outputSchema: z.object({
+    emails: z.array(z.any()),
+  }),
   execute: async (input, context) => {
     const apiKey = context.secrets.EMAIL_API_KEY;
     // Read emails
@@ -240,7 +257,7 @@ export const readEmails = tool({
 });
 ```
 
-Pass secrets via CLI using a `.env` file:
+During `run` pass secrets via CLI using a `.env` file:
 
 ```bash
 # Create a .env file in your current directory:
@@ -295,11 +312,13 @@ Executes JavaScript code for both tool calling and general computation.
 ```javascript
 // For calling custom tools:
 const weather = await tools.getWeather({ location: "Paris" });
-console.log(weather);
+
+return { result };
 
 // For calculations and data manipulation:
 const result = Math.sqrt(144) * 2;
-console.log(result);
+
+return { result };
 ```
 
 The code is validated for safety (no `require()`, `import`, `eval()`, etc.) and executed in a sandboxed environment.
@@ -454,6 +473,7 @@ Together Agent supports two execution modes depending on your use case:
 Messages are streamed to the client in real-time via Server-Sent Events (SSE). The connection remains open throughout execution.
 
 **Usage with SDK:**
+
 ```typescript
 const agent = await sdk.createAgent("pt_abc123");
 
@@ -466,6 +486,7 @@ for await (const message of agent.prompt("What's the weather?")) {
 ```
 
 **Direct HTTP usage:**
+
 ```bash
 curl -N -X POST http://localhost:3000/prompt \
   -H "Content-Type: application/json" \
@@ -477,6 +498,7 @@ curl -N -X POST http://localhost:3000/prompt \
 ```
 
 **Characteristics:**
+
 - Connection stays open during execution
 - Real-time message streaming via SSE
 - Supports interactive approvals
@@ -492,6 +514,7 @@ curl -N -X POST http://localhost:3000/prompt \
 The agent executes in the background and sends all messages to your webhook URL via HTTP POST. The initial request returns immediately with a `202 Accepted` status.
 
 **Request body:**
+
 ```typescript
 {
   prompt: string;
@@ -507,6 +530,7 @@ The agent executes in the background and sends all messages to your webhook URL 
 ```
 
 **Example:**
+
 ```bash
 curl -X POST http://localhost:3000/execute \
   -H "Content-Type: application/json" \
@@ -523,6 +547,7 @@ curl -X POST http://localhost:3000/execute \
 ```
 
 **Your webhook endpoint receives all messages:**
+
 ```typescript
 // Express.js webhook handler
 app.post("/webhook", (req, res) => {
@@ -555,6 +580,7 @@ app.post("/webhook", (req, res) => {
 ```
 
 **Characteristics:**
+
 - Request returns immediately with `202 Accepted`
 - Agent executes in background
 - All messages sent to webhook URL via POST
@@ -570,6 +596,7 @@ Each webhook POST contains a single `AgentMessage` object (same structure as SSE
 If webhook delivery fails, the error is logged but doesn't stop agent execution. Implement retry logic in your webhook handler if needed.
 
 **Security:**
+
 - Use `webhookAuthorization` to authenticate webhook requests
 - Validate the authorization header in your webhook handler
 - Use HTTPS for webhook URLs in production
@@ -626,6 +653,9 @@ export default tool({
   ],
   inputSchema: z.object({
     query: z.string(),
+  }),
+  outputSchema: z.object({
+    results: z.array(z.any()),
   }),
   execute: async (input, context) => {
     const apiKey = context.secrets.BRAVE_API_KEY;
@@ -771,6 +801,9 @@ export default tool({
     subject: z.string(),
     body: z.string(),
   }),
+  outputSchema: z.object({
+    success: z.boolean(),
+  }),
   execute: async (input, context) => {
     // Request approval before sending
     await context.requestApproval({
@@ -861,6 +894,9 @@ export default tool({
     subject: z.string(),
     body: z.string(),
   }),
+  outputSchema: z.object({
+    success: z.boolean(),
+  }),
   execute: async (input, context) => {
     // Request approval BEFORE performing the action
     await context.requestApproval({
@@ -891,14 +927,33 @@ Together Agent implements multiple layers of security to protect against code in
 When the AI generates code to call your tools, that code is **never directly executed**. Instead:
 
 1. **AST Parsing** - Generated code is parsed into an Abstract Syntax Tree (AST) before execution
-2. **Static Analysis** - The AST is analyzed to detect and reject dangerous patterns:
-   - No `require()` or `import` statements
-   - No `eval()`, `Function()`, or code generation
-   - No access to `process`, `global`, or other Node.js internals
-   - No filesystem or network access
-3. **Controlled Execution** - Only validated code runs in a restricted JavaScript environment
+2. **Static Analysis** - The AST is analyzed using a strict whitelist approach:
 
-This prevents the AI from generating malicious code that attempts to access system resources or escape the sandbox.
+   **Allowed globals only:**
+   - Standard JavaScript built-ins: `Array`, `Boolean`, `Date`, `Error`, `JSON`, `Math`, `Number`, `Object`, `String`, `RegExp`, `Map`, `Set`, `Promise`
+   - Standard functions: `parseInt`, `parseFloat`, `isNaN`, `isFinite`
+   - Standard values: `undefined`, `NaN`, `Infinity`
+   - The `tools` object (for accessing your custom tools)
+   - The `console` object (for logging)
+
+   **Allowed language features:**
+   - Variable declarations (`const`, `let`, `var`)
+   - Functions (arrow functions, function declarations, async/await)
+   - `for` loops (including `for...of` and `for...in`)
+   - Array methods (`.map()`, `.filter()`, `.reduce()`, etc.)
+   - Object and array destructuring
+   - Try/catch error handling
+
+   **Blocked features:**
+   - Module imports/exports (`require`, `import`, `export`)
+   - Code generation (`eval`, `Function`, `setTimeout`, `setInterval`)
+   - Node.js internals (`process`, `global`, `__dirname`, `module`)
+   - `while` and `do-while` loops (use `for` loops or array methods instead)
+   - Constructor escape patterns (e.g., `{}.constructor.constructor`)
+
+3. **Controlled Execution** - Only validated code runs in a restricted JavaScript environment with no access to filesystem, network, or system resources beyond the allowed globals
+
+This whitelist approach prevents the AI from generating malicious code that attempts to access system resources or escape the sandbox. Any identifier not explicitly allowed will be rejected.
 
 ### Secrets Security
 
@@ -1502,6 +1557,7 @@ import { tool, ToolExecutionContext } from 'together-agent';
 export default tool({
   discoveryTerms: string[],
   inputSchema: z.ZodType,
+  outputSchema: z.ZodType,
   execute: async (input, context) => any
 });
 ```
@@ -1516,12 +1572,14 @@ import { tool } from 'together-agent';
 export const toolOne = tool({
   discoveryTerms: string[],
   inputSchema: z.ZodType,
+  outputSchema: z.ZodType,
   execute: async (input, context) => any
 });
 
 export const toolTwo = tool({
   discoveryTerms: string[],
   inputSchema: z.ZodType,
+  outputSchema: z.ZodType,
   execute: async (input, context) => any
 });
 ```
@@ -1594,6 +1652,64 @@ export default tool({
     // - input.location is string
     // - input.units is 'fahrenheit' | 'celsius' | undefined
     return { temperature: 72 };
+  },
+});
+```
+
+### `outputSchema`
+
+Zod schema defining the structure of the data that the tool returns. This helps the AI understand what data format to expect from your tool, enabling it to write correct code that handles the tool's results.
+
+```typescript
+outputSchema: z.object({
+  temperature: z.number(),
+  condition: z.string(),
+  humidity: z.number(),
+  windSpeed: z.number(),
+});
+```
+
+**Why it matters:**
+
+The `outputSchema` is critical for the AI to compose correct code that handles tool results. When the AI generates code like:
+
+```javascript
+const weather = await tools.getWeather({ location: "Paris" });
+console.log(`Temperature: ${weather.temperature}°F`);
+```
+
+It needs to know that `weather.temperature` exists and is a number. The `outputSchema` provides this information.
+
+**Best practices:**
+
+- Define the exact structure your `execute` function returns
+- Use specific Zod types (string, number, boolean, enum, array, etc.)
+- Include all fields that the AI might need to access
+- Keep the schema aligned with your actual return value
+
+**Type safety example:**
+
+```typescript
+import { tool } from "together-agent";
+import { z } from "zod";
+
+export default tool({
+  discoveryTerms: ["weather", "temperature", "forecast"],
+  inputSchema: z.object({
+    location: z.string(),
+  }),
+  outputSchema: z.object({
+    temperature: z.number(),
+    condition: z.string(),
+    humidity: z.number(),
+  }),
+  execute: async (input, context) => {
+    // ✅ TypeScript ensures the return value matches outputSchema
+    return {
+      temperature: 72,
+      condition: "sunny",
+      humidity: 65,
+    };
   },
 });
 ```
@@ -1947,6 +2063,16 @@ export default tool({
       .describe("Temperature units (fahrenheit or celsius)"),
   }),
 
+  outputSchema: z.object({
+    location: z.string(),
+    temperature: z.number(),
+    units: z.string(),
+    condition: z.string(),
+    humidity: z.number(),
+    windSpeed: z.number(),
+    feelsLike: z.number(),
+  }),
+
   execute: async (input, context) => {
     const apiKey = context.secrets.WEATHER_API_KEY;
 
@@ -2009,6 +2135,11 @@ export default tool({
     to: z.string().describe("Recipient email address"),
     subject: z.string().describe("Email subject line"),
     body: z.string().describe("Email body content"),
+  }),
+
+  outputSchema: z.object({
+    success: z.boolean(),
+    messageId: z.string(),
   }),
 
   execute: async (input, context) => {
@@ -2091,6 +2222,12 @@ export default tool({
     limit: z.number().default(10),
   }),
 
+  outputSchema: z.object({
+    table: z.string(),
+    count: z.number(),
+    results: z.array(z.any()),
+  }),
+
   execute: async (input, context) => {
     const dbUrl = context.secrets.DATABASE_URL;
 
@@ -2142,6 +2279,12 @@ export default tool({
     content: z.string().describe("Content to write to the file"),
   }),
 
+  outputSchema: z.object({
+    success: z.boolean(),
+    path: z.string(),
+    size: z.number(),
+  }),
+
   execute: async (input, context) => {
     // Use the workspace path from context
     const filePath = path.join(context.workspacePath, input.filename);
@@ -2180,6 +2323,13 @@ export default tool({
   ],
   inputSchema: z.object({
     filename: z.string().describe("Name of the file to read"),
+  }),
+
+  outputSchema: z.object({
+    filename: z.string(),
+    content: z.string(),
+    size: z.number(),
+    modified: z.date(),
   }),
 
   execute: async (input, context) => {
