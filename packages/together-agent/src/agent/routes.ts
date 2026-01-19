@@ -878,6 +878,12 @@ async function executeAgent(params: {
     flushQueue,
   } = params;
 
+  // Assign journalConfig to config for use throughout the function
+  const config = journalConfig;
+
+  // Local message queue for text-delta accumulation
+  const messageQueue: AgentMessage[] = [];
+
   // Create requestApproval function for tools
   const requestApproval = async (
     payload: any,
@@ -1100,11 +1106,23 @@ async function executeAgent(params: {
 
         case "tool-result":
           // Flush the queue - text message will be first, then tool messages
+          // First flush local text messages
+          for (const msg of messageQueue) {
+            sendMessageNow(msg);
+          }
+          messageQueue.length = 0;
+          // Then flush tool messages from callback
           flushQueue();
           break;
 
         case "finish":
           // Flush any remaining messages
+          // First flush local text messages
+          for (const msg of messageQueue) {
+            sendMessageNow(msg);
+          }
+          messageQueue.length = 0;
+          // Then flush tool messages from callback
           flushQueue();
           break;
       }
@@ -1162,7 +1180,13 @@ async function executeAgent(params: {
     // Only compress if context threshold is exceeded
     if (shouldCompress(sessionState, config)) {
       performCompression(sessionState, config, queueMessage);
-      flushQueue(); // Flush compression messages
+      // Flush local text messages first
+      for (const msg of messageQueue) {
+        sendMessageNow(msg);
+      }
+      messageQueue.length = 0;
+      // Then flush compression messages from callback
+      flushQueue();
     }
 
     // Send debug message showing what was sent to the LLM on this turn (INPUT)
