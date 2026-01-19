@@ -118,15 +118,18 @@ import { TogetherAgentSDK } from "together-agent";
 const sdk = new TogetherAgentSDK({ apiKey: process.env.TOGETHER_API_KEY });
 const agent = await sdk.createAgent("pt_abc123");
 
-// Stream messages from the agent
+// Stream messages from the agent - prompt() returns an async iterable
 for await (const message of agent.prompt("What is the weather in Tokyo?")) {
   if (message.type === "text") {
     console.log(message.content);
   }
+  if (message.type === "done") {
+    console.log("Complete!");
+  }
 }
 ```
 
-Run with `node test-agent.js`.
+The SDK automatically handles SSE stream parsing and yields messages in real-time. Run with `node test-agent.js`.
 
 ## Defining Your Agent
 
@@ -486,15 +489,25 @@ Messages are streamed to the client in real-time via Server-Sent Events (SSE). T
 ```typescript
 const agent = await sdk.createAgent("pt_abc123");
 
-// Stream messages in real-time
+// Stream messages in real-time - SDK handles SSE parsing automatically
 for await (const message of agent.prompt("What's the weather?")) {
   if (message.type === "text") {
     console.log(message.content);
   }
+  if (message.type === "done") {
+    console.log("Complete!");
+  }
 }
 ```
 
-**Direct HTTP usage:**
+The SDK automatically handles:
+- Server-Sent Events (SSE) connection management
+- Message parsing and deserialization
+- Stream buffering and error handling
+
+**Direct HTTP usage (if not using SDK):**
+
+If you're not using the Node.js SDK, you can make direct HTTP requests and handle SSE parsing yourself:
 
 ```bash
 curl -N -X POST http://localhost:3000/prompt \
@@ -1158,12 +1171,18 @@ Save the template ID to use with the Node.js client.
 Main client class for interacting with deployed agents.
 
 ```typescript
-import { TogetherAgentSDK } from "together-agent";
+import { TogetherAgentSDK, AgentMessage } from "together-agent";
 
 const sdk = new TogetherAgentSDK({
   apiKey: "your-together-api-key", // Optional if TOGETHER_API_KEY is set
 });
 ```
+
+**Exported Types:**
+- `TogetherAgentSDK` - Main SDK class
+- `AgentMessage` - Type for messages yielded by `agent.prompt()`
+- `ToolExecutionContext` - Context passed to tool execute functions
+- `CustomToolDefinition` - Interface for defining tools
 
 ### `createAgent(templateId)`
 
@@ -1183,7 +1202,7 @@ interface Agent {
   prompt: (
     message: string,
     options?: PromptOptions
-  ) => AsyncIterable<AgentMessage>;
+  ) => AsyncIterable<AgentMessage>; // Async iterable that yields agent messages
   approve: (approvalId: string) => Promise<void>;
   reject: (approvalId: string) => Promise<void>;
   downloadFile: (filePath: string) => Promise<Response>;
@@ -1193,11 +1212,16 @@ interface Agent {
     contentType?: string
   ) => Promise<Response>;
 }
+
+interface AgentMessage {
+  type: string;
+  [key: string]: any; // Additional properties depending on message type
+}
 ```
 
 ### `agent.prompt(message, options)`
 
-Send a prompt to your agent and receive a stream of messages.
+Send a prompt to your agent and receive a stream of messages. The method returns an async iterable that automatically handles SSE parsing and yields messages as they arrive from the agent.
 
 ```typescript
 for await (const message of agent.prompt("What is the weather in Paris?", {
@@ -1218,6 +1242,9 @@ for await (const message of agent.prompt("What is the weather in Paris?", {
     case "error":
       console.error("Error:", message.error);
       break;
+    case "done":
+      console.log("Execution complete");
+      break;
   }
 }
 ```
@@ -1231,7 +1258,22 @@ interface PromptOptions {
 ```
 
 **Returns:**
-An async iterable that yields `AgentMessage` objects. See [Message Types](#message-streaming) for all message types.
+
+`AsyncIterable<AgentMessage>` - An async iterable that yields messages as they are received from the agent. The SDK automatically:
+- Parses the Server-Sent Events (SSE) stream
+- Decodes and parses each message
+- Yields messages in real-time as they arrive
+
+You can use `for await...of` to iterate through messages, or convert to an array with `Array.from()` if needed.
+
+```typescript
+interface AgentMessage {
+  type: string;
+  [key: string]: any; // Additional properties depending on message type
+}
+```
+
+See [Message Types](#message-streaming) for all available message types and their properties.
 
 **Example - Collecting the final response:**
 
