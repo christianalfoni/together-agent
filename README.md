@@ -4,14 +4,6 @@ Build AI agents with custom tools powered by Together AI.
 
 ---
 
-## 🧪 Testing Codename: "amazeballs"
-
-**For testing purposes, this package is temporarily published to npm as `amazeballs`.**
-
-Throughout this documentation, we use `together-agent` as the package name. When installing or using the package during testing, **replace `together-agent` with `amazeballs`**:
-
----
-
 ## Why Together Agent?
 
 **Code execution as the interface** - Unlike traditional function calling where tools have rigid schemas, Together Agent lets the AI write JavaScript code to call your tools. This means the AI can combine multiple tools, perform calculations, and handle complex logic all in one execution.

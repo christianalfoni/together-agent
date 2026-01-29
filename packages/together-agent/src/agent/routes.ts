@@ -916,6 +916,20 @@ async function executeAgent(params: {
       sessionState.customPrompt = customAgentPrompt;
     }
 
+    const together = createTogetherAI({ apiKey });
+    const { codeTools, nativeTools } = await loadTools(context);
+
+    // Add native tools to discoveredTools on first message so they appear in system prompt
+    if (sessionState.messages.length === 0) {
+      for (const [toolName, toolDef] of Object.entries(nativeTools)) {
+        sessionState.discoveredTools.set(toolName, {
+          name: toolName,
+          inputSchema: toolDef.inputSchema,
+          outputSchema: toolDef.outputSchema,
+        });
+      }
+    }
+
     // Update or add system message with current discovered tools
     // We regenerate the system prompt on EVERY turn to include any newly discovered tools.
     // This ensures the LLM always has access to the full set of discovered tools with their
@@ -949,9 +963,6 @@ async function executeAgent(params: {
     sessionState.messages.push(userMessage);
     // Track this as the last user/assistant message for journal attachment
     sessionState.lastUserOrAssistantMessage = userMessage;
-
-    const together = createTogetherAI({ apiKey });
-    const { codeTools, nativeTools } = await loadTools(context);
 
     // Wrap code tools to send started/completed messages
     const wrappedCodeTools: Record<string, CustomToolDefinition> = {};

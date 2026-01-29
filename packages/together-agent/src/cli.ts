@@ -116,7 +116,7 @@ program
         build: "rm -rf dist && tsc",
       },
       dependencies: {
-        amazeballs: "latest",
+        "together-agent": "latest",
         zod: "latest",
       },
       devDependencies: {
@@ -156,7 +156,7 @@ program
 
     // Create getWeather.ts
     const getWeatherContent = `import { z } from 'zod'
-import { tool } from 'amazeballs'
+import { tool } from 'together-agent'
 
 export default tool({
   discoveryTerms: ['weather', 'temperature', 'climate', 'forecast', 'conditions'],
